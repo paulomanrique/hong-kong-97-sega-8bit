@@ -1,21 +1,17 @@
-#ifndef MAIN_H
-#define MAIN_H
+#ifndef HK97_MAIN_H
+#define HK97_MAIN_H
 
-#include <genesis.h>
-#include "game_tables.h"
+#include <stdint.h>
 
-extern u16 g_lang;
-extern u16 g_tileNext;
-extern bool g_cheat;
+typedef uint8_t u8;
+typedef int8_t s8;
+typedef uint16_t u16;
+typedef int16_t s16;
 
-void screenClear(void);
-void setPalTarget(u16 line, const u16 *colors);
-void drawPhoto(const Image *img);
-void drawText(const Image *img);
-bool waitFramesOrButton(u16 frames);
-void showFadeIn(void);
-void showFadeOut(void);
-
-void runGame(void);
+#define HK_KEY_UP    0x0001u
+#define HK_KEY_DOWN  0x0002u
+#define HK_KEY_LEFT  0x0004u
+#define HK_KEY_RIGHT 0x0008u
+#define HK_KEY_FIRE  0x0010u
 
 #endif
