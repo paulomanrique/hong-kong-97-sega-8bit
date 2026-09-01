@@ -1,44 +1,105 @@
 # Hong Kong 97 — Sega Master System port
 
-Native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
-Master System. The complete gameplay specification and extraction pipeline come
-from the existing Mega Drive port and its SNES disassembly. The shipping ROM
-does not interpret 65816 code and does not contain the original SNES ROM.
+A native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
+Master System. It was reimplemented from the SNES disassembly developed for
+the earlier Mega Drive port. The result runs directly on the target hardware:
+it neither embeds the SNES ROM nor interprets 65816 code.
 
-The target is 256×224 NTSC Mode 4 and therefore requires an SMS II-class VDP,
-Game Gear VDP, or a Mega Drive/Genesis Power Base Converter. Game logic,
-coordinates, timings, hitboxes, object behavior, score bugs, screen flow, and
-the six-background cycle remain source-derived. The asset pipeline documents
-the smaller target's visual conversions and fails when a hardware budget is
-exceeded.
+**[Download the ready-to-play Master System ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)**
 
-## Required source ROM
+This repository intentionally contains no original-game ROM, extracted
+graphics, extracted audio, generated commercial assets, or compiled `.sms`
+file. Those files are regenerated locally from a user-supplied copy of the
+original game and remain ignored by Git. The open MIDI arrangement used by the
+port is included under `assets/music/`.
 
-Supply the unheadered 524,288-byte ROM whose SHA-1 is
-`6b518a19acea46ec62b7d7ce6604013f62a6906e`. It is read only to regenerate
-commercial graphics, audio, and tables locally; all such outputs are ignored by
-Git.
+## Port behavior
 
-```sh
-make prepare ROM=/path/to/hk97.sfc
-make verify
+- Boots directly to the first title/presentation screen in English.
+- Only Start/Pause advances that first screen.
+- The Konami Code (`Up Up Down Down Left Right Left Right 2 1`) enables
+  invincibility and plays the “Eu sou cheteiro” screen and voice cue.
+- D-pad moves Chan; button 1 or 2 fires.
+- The original broken score display and the two Chinese screens after death
+  are omitted.
+- The MIDI is compiled offline to a compact native SN76489 event stream.
+- The 96-pixel boss is reduced to 64 pixels to fit the Master System's limit of
+  eight sprites on one scanline. Game logic, health, hitboxes, and movement
+  remain target-native C.
+
+The target is 256×224 NTSC Mode 4 and requires an SMS II-class VDP, Game Gear
+VDP, or a Mega Drive/Genesis Power Base Converter.
+
+## Building
+
+### Dependencies
+
+- GNU Make and a C compiler for the host-side tests
+- Python 3 with Pillow (`python3 -m pip install Pillow`)
+- `ffmpeg` and `xxd`
+- SDCC 4.2 or newer
+- [devkitSMS](https://github.com/sverx/devkitSMS), checked out as a sibling
+  directory and with `SMSlib`, `assets2banks`, and `ihx2sms` built
+- The author-owned cheat assets from the public
+  [Mega Drive port](https://github.com/paulomanrique/hong-kong-97-genesis),
+  checked out beside this repository or supplied through `CHEAT_ASSETS`
+- A legally obtained copy of the original SNES game
+
+The expected source is the unheadered 524,288-byte No-Intro dump with SHA-1:
+
+```text
+6b518a19acea46ec62b7d7ce6604013f62a6906e
 ```
 
-Dependencies: Python 3, Pillow, NumPy, SDCC 4.x, a sibling `devkitSMS`
-checkout, and the locally built `ihx2sms` from that checkout. Headless runtime
-verification uses MesenCE through `tools/smoke.sh`.
+With `devkitSMS`, `hong-kong-97-genesis`, and this repository in the same
+parent directory:
 
-## Architecture
+```sh
+python3 -m pip install Pillow
+make prepare ROM=/path/to/hk97.sfc
+make
+```
 
-- `tools/`: deterministic ROM validation, source disassembly, extraction, and
-  SMS asset conversion.
-- `src/`: readable target-native game/runtime code compiled by SDCC.
-- `generated/`: banked commercial data regenerated from the user's ROM.
+The resulting ROM is `build/hong-kong-97-sms.sms`. `make prepare` validates
+the source ROM before extracting anything. To keep the other repositories in
+different locations, override their paths:
+
+```sh
+make prepare ROM=/path/to/hk97.sfc \
+  DEVKITSMS=/path/to/devkitSMS \
+  CHEAT_ASSETS=/path/to/hong-kong-97-genesis/res/egg
+```
+
+The included MIDI is used by default. `MIDI=/path/to/another.mid` selects a
+different format-0 or format-1 Standard MIDI File.
+
+### Tests and verification
+
+```sh
+make test       # host game-logic and synthetic converter tests
+make verify     # tests, ROM build, header/RAM checks, and MesenCE smoke flow
+```
+
+`make verify` expects a MesenCE build; set `MESEN_BIN=/path/to/Mesen` when it
+is not installed at the default path used by `tools/smoke.sh`.
+
+## Repository layout
+
+- `assets/music/`: the redistributable MIDI arrangement.
+- `src/`: readable target-native game, renderer, input, and audio code.
+- `tools/`: ROM validation, disassembly, extraction, graphics conversion, and
+  MIDI-to-SN76489 compilation.
 - `tests/`: synthetic converter tests and host-side game-logic checks.
-- `docs/source-mapping.md`: SNES routine/table to C behavior map inherited
-  from the measured Mega Drive conversion.
+- `docs/`: source mapping, measured target budgets, and porting notes.
+- `work/`, `res/`, `generated/`, and `build/`: private or generated files;
+  all are excluded from version control.
 
-The original's hidden fourth language-menu option remains. Mega Drive-port
-extras (Konami code, cheats, creator branding, jingle, and invented blinking
-`PRESS START`) are deliberately excluded from the fidelity baseline.
+## License and legal
 
+The reimplementation, tools, and documentation are MIT licensed; see
+[`LICENSE`](LICENSE). The included MIDI is redistributed with permission as
+documented in [`assets/music/README.md`](assets/music/README.md).
+
+*Hong Kong 97* and its original graphics, audio, text, and other assets belong
+to their respective rights holders. They are not included here. The generated
+ROM is available separately from the itch.io page linked above.

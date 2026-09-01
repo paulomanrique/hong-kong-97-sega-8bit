@@ -8,15 +8,18 @@
 #define P_DEAD 1
 #define P_FLICK 2
 #define BOSS_KILLS 30
+#define PLAYFIELD_BOTTOM 0xC0
+#define HK_LOGIC_STEPS 2
 
 HKObject hk_objects[HK_MAX_OBJECTS];
 s16 hk_player_x, hk_player_y;
-u8 hk_player_anim, hk_player_visible, hk_digits[9];
+u8 hk_player_anim, hk_player_visible;
 u8 hk_current_background, hk_background_flash;
 
 static u8 pstate, shots, kills, boss_active, next_background;
+static u8 cheat_enabled;
 static u8 seq_x, seq_type, seq_vehicle, seq_drop;
-static u16 pflicker, death_timer, pending_points, spawn_delay;
+static u16 pflicker, death_timer, spawn_delay;
 static const u8 type_anim[15] = {
     0x0A,0x09,0x03,0x04,0x05,0x01,0x0D,0x0D,
     0x0E,0x00,0x08,0x06,0x06,0x06,0x06
@@ -24,16 +27,20 @@ static const u8 type_anim[15] = {
 
 static s16 iabs16(s16 v) { return v < 0 ? -v : v; }
 
+static void init_object(HKObject *o, u8 type, s16 x, s16 y)
+{
+    memset(o, 0, sizeof(*o));
+    o->type = type; o->anim = type_anim[type]; o->visible = 1;
+    o->ftimer = ANIM_DURS[o->anim][0]; o->x = x; o->y = y;
+    o->hp = type == 5 ? 32 : type == 9 ? 8 : 1;
+}
+
 static HKObject *spawn(u8 type, s16 x, s16 y)
 {
-    u8 i;
-    for (i = 0; i < HK_MAX_OBJECTS; ++i) {
-        HKObject *o = &hk_objects[i];
+    HKObject *o;
+    for (o = hk_objects; o != hk_objects + HK_MAX_OBJECTS; ++o) {
         if (o->type) continue;
-        memset(o, 0, sizeof(*o));
-        o->type = type; o->anim = type_anim[type]; o->visible = 1;
-        o->ftimer = ANIM_DURS[o->anim][0]; o->x = x; o->y = y;
-        o->hp = type == 5 ? 32 : type == 9 ? 8 : 1;
+        init_object(o, type, x, y);
         return o;
     }
     return 0;
@@ -48,21 +55,6 @@ static u8 animation_step(HKObject *o)
     if (++o->frame >= ANIM_NFRAMES[o->anim]) { o->frame = 0; done = 1; }
     o->ftimer = ANIM_DURS[o->anim][o->frame];
     return done;
-}
-
-static void score_step(void)
-{
-    u8 *d = hk_digits;
-    if (!pending_points) return;
-    --pending_points; ++d[0];
-    if (d[0] == 9) { d[0] = 0; ++d[1];
-    if (d[1] == 9) { d[1] = 0; ++d[2];
-    if (d[2] == 9) { d[2] = 0; ++d[3];
-    if (d[3] == 9) { d[3] = 0; ++d[3]; /* original bug */
-    if (d[4] == 9) { d[4] = 0; ++d[5];
-    if (d[5] == 9) { d[5] = 0; ++d[6];
-    if (d[6] == 9) { d[6] = 0; ++d[7];
-    if (d[7] == 9) { d[7] = 0; ++d[8]; }}}}}}}}
 }
 
 static void spawner_step(void)
@@ -101,13 +93,19 @@ static void player_step(u16 held, u16 pressed)
     if ((held & HK_KEY_LEFT) && hk_player_x > 0x10) { hk_player_x -= 2; anim = 0x02; }
     if ((held & HK_KEY_RIGHT) && hk_player_x < 0xF0) { hk_player_x += 2; anim = 0x0C; }
     if ((held & HK_KEY_UP) && hk_player_y > 0x28) { hk_player_y -= 2; anim = 0x10; }
-    if ((held & HK_KEY_DOWN) && hk_player_y < 0xE0) { hk_player_y += 2; anim = 0x0F; }
+    if ((held & HK_KEY_DOWN) && hk_player_y < PLAYFIELD_BOTTOM) { hk_player_y += 2; anim = 0x0F; }
     if ((pressed & HK_KEY_FIRE) && shots < 4 && spawn(1, hk_player_x, hk_player_y)) ++shots;
     hk_player_anim = anim;
 }
 
 static void hit_player(u8 mode, HKObject *source)
 {
+#ifdef HK97_PROFILE
+    (void)mode;
+    (void)source;
+    return;
+#endif
+    if (cheat_enabled) return;
     if (pstate != P_ALIVE) return;
     if (mode == 1 || mode == 4) { pstate = P_DEAD; death_timer = 1; }
     else if (mode == 2) {
@@ -117,18 +115,28 @@ static void hit_player(u8 mode, HKObject *source)
     }
 }
 
+void hk_game_set_cheat(u8 enabled)
+{
+    cheat_enabled = enabled ? 1 : 0;
+}
+
 static void shot_hit(HKObject *e)
 {
     if (e->type >= 2 && e->type <= 4) {
-        ++kills; pending_points += 5; drop_item(e->x, e->y);
-        spawn(11, e->x, e->y); kill_object(e);
+        s16 hit_x = e->x, hit_y = e->y;
+        ++kills; drop_item(hit_x, hit_y);
+        /* Reuse the killed enemy's slot. Besides guaranteeing an effect when
+         * all 12 slots are busy, this preserves the impact coordinates across
+         * the collision pass instead of allocating elsewhere in the list. */
+        init_object(e, 11, hit_x, hit_y);
     } else if (e->type == 9) {
         if (--e->hp == 0) {
-            ++kills; pending_points += 50; drop_item(e->x, e->y);
-            spawn(13, e->x, e->y); kill_object(e);
+            s16 hit_x = e->x, hit_y = e->y;
+            ++kills; drop_item(hit_x, hit_y);
+            init_object(e, 13, hit_x, hit_y);
         }
     } else if (e->type == 5 && e->st0 != 0 && e->st0 != 6 && --e->hp == 0) {
-        pending_points += 100; boss_active = 0; spawn(13, e->x, e->y);
+        boss_active = 0; spawn(13, e->x, e->y);
         e->st0 = 6; e->st1 = 0;
     }
 }
@@ -152,7 +160,7 @@ static void object_step(HKObject *o)
     u8 done = animation_step(o);
     switch (o->type) {
     case 1: o->y -= 4; if (o->y < -8) { --shots; kill_object(o); } break;
-    case 2: if (++o->y >= 0x100) kill_object(o); break;
+    case 2: if (++o->y >= PLAYFIELD_BOTTOM) kill_object(o); break;
     case 3: {
         s16 v, w; o->y += 2;
         if (hk_player_x >= o->x) { if (o->st0 < 0x1B) ++o->st0; }
@@ -161,13 +169,13 @@ static void object_step(HKObject *o)
         if (o->st1 < 4 && iabs16(hk_player_x - o->x) < 8) {
             if (o->st2) --o->st2; else { o->st2 = 0x18; ++o->st1; spawn(10, o->x, o->y); }
         }
-        if (o->y >= 0x100) kill_object(o);
+        if (o->y >= PLAYFIELD_BOTTOM) kill_object(o);
         break;
     }
     case 4:
         o->y += 2; o->x += ZIGZAG4[o->st0]; ++o->st0;
         if (o->st0 >= (s16)(sizeof(ZIGZAG4) / sizeof(ZIGZAG4[0])) || ZIGZAG4[o->st0] == 0) o->st0 = 0;
-        if (o->y >= 0x100) kill_object(o);
+        if (o->y >= PLAYFIELD_BOTTOM) kill_object(o);
         break;
     case 5:
         switch (o->st0) {
@@ -178,7 +186,7 @@ static void object_step(HKObject *o)
         case 2: boss_sweep(o); if (--o->st1 == 0) { o->st0 = 3; o->st1 = 0; } break;
         case 3:
             o->y += BOSS_DESC[o->st1]; if (o->st1 < 0x10) ++o->st1;
-            if (o->y >= 0xDC) { o->y = 0xDC; o->st0 = 4; o->st1 = 0x3C; } break;
+            if (o->y >= 0xB8) { o->y = 0xB8; o->st0 = 4; o->st1 = 0x3C; } break;
         case 4: if (--o->st1 == 0) o->st0 = 5; break;
         case 5: if (--o->y <= 0x80) { o->y = 0x80; o->st0 = 1; } break;
         case 6:
@@ -186,9 +194,9 @@ static void object_step(HKObject *o)
             if (o->st1 >= 0x78) kill_object(o);
             break;
         } break;
-    case 7: case 8: if (++o->y >= 0xE0) kill_object(o); break;
+    case 7: case 8: if (++o->y >= PLAYFIELD_BOTTOM) kill_object(o); break;
     case 9: --o->x; if (iabs16(hk_player_x - o->x) < 0x18) o->x -= 3; if (o->x < -16) kill_object(o); break;
-    case 10: o->y += 3; if (o->y >= 0xE0) kill_object(o); break;
+    case 10: o->y += 3; if (o->y >= PLAYFIELD_BOTTOM) kill_object(o); break;
     case 11: case 14: if (done) kill_object(o); break;
     case 12: if (done) { death_timer = 120; kill_object(o); } break;
     case 13:
@@ -204,16 +212,15 @@ static void object_step(HKObject *o)
 static void collisions_step(void)
 {
     static const u8 ph[15] = {0,0,1,1,1,4,0,2,3,1,1,0,0,0,0};
-    u8 i, j;
-    for (i = 0; i < HK_MAX_OBJECTS; ++i) {
-        HKObject *o = &hk_objects[i]; u8 h;
+    HKObject *o, *s;
+    for (o = hk_objects; o != hk_objects + HK_MAX_OBJECTS; ++o) {
+        u8 h;
         if (!o->type) continue;
         h = ph[o->type];
         if (h && pstate == P_ALIVE && overlap(hk_player_x,hk_player_y,hk_player_anim,o->x,o->y,o->anim)
             && (o->type != 5 || (o->st0 >= 1 && o->st0 <= 5))) hit_player(h,o);
         if ((o->type >= 2 && o->type <= 5) || o->type == 9) {
-            for (j = 0; j < HK_MAX_OBJECTS; ++j) {
-                HKObject *s = &hk_objects[j];
+            for (s = hk_objects; s != hk_objects + HK_MAX_OBJECTS; ++s) {
                 if (s->type == 1 && overlap(s->x,s->y,s->anim,o->x,o->y,o->anim)) {
                     --shots; kill_object(s); shot_hit(o); break;
                 }
@@ -224,18 +231,30 @@ static void collisions_step(void)
 
 void hk_game_begin(void)
 {
-    memset(hk_objects,0,sizeof(hk_objects)); memset(hk_digits,0,sizeof(hk_digits));
+    memset(hk_objects,0,sizeof(hk_objects));
     hk_current_background = next_background; if (++next_background >= 6) next_background = 0;
-    hk_player_x=0x80; hk_player_y=0xD8; hk_player_anim=0x0A; hk_player_visible=1; hk_background_flash=0;
-    pstate=P_ALIVE; pflicker=0; shots=kills=boss_active=0; death_timer=pending_points=0; spawn_delay=60;
+    hk_player_x=0x80; hk_player_y=0xB8; hk_player_anim=0x0A; hk_player_visible=1; hk_background_flash=0;
+    pstate=P_ALIVE; pflicker=0; shots=kills=boss_active=0; death_timer=0; spawn_delay=60;
     seq_x=seq_type=seq_vehicle=seq_drop=0;
 }
 
 u8 hk_game_step(u16 held, u16 pressed)
 {
-    u8 i; player_step(held,pressed); spawner_step();
-    for (i=0;i<HK_MAX_OBJECTS;++i) if (hk_objects[i].type) object_step(&hk_objects[i]);
-    collisions_step(); score_step();
-    if (pstate == P_DEAD) { hk_player_visible=0; if (death_timer && --death_timer == 0) return 1; }
+    HKObject *o;
+    u8 step;
+    for (step = 0; step < HK_LOGIC_STEPS; ++step) {
+        player_step(held, step ? 0 : pressed);
+        spawner_step();
+        for (o = hk_objects; o != hk_objects + HK_MAX_OBJECTS; ++o)
+            if (o->type) object_step(o);
+    }
+    collisions_step();
+    if (pstate == P_DEAD) {
+        hk_player_visible=0;
+        if (death_timer) {
+            if (death_timer <= HK_LOGIC_STEPS) return 1;
+            death_timer -= HK_LOGIC_STEPS;
+        }
+    }
     return 0;
 }
