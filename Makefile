@@ -123,6 +123,7 @@ verify: test build-code-fast smoke smoke-flow
 	$(PYTHON) tools/verify_build.py $(BUILD)/$(PROG).sms $(BUILD)/$(PROG).map
 
 clean:
-	rm -rf $(BUILD) $(GENERATED)
+	rm -rf $(BUILD) $(GENERATED) disasm res
+	rm -f docs/anims.json src/game_tables.h
 
 FORCE:
