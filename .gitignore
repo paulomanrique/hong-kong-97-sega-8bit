@@ -1,0 +1,18 @@
+# User-supplied ROM and everything derived from it
+work/
+disasm/
+res/gfx/
+res/music/
+generated/
+docs/anims.json
+src/game_tables.h
+*.sfc
+*.smc
+*.zip
+
+# Build and verification output
+build/
+docs/screenshots/
+__pycache__/
+*.pyc
+
