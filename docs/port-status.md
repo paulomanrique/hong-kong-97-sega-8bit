@@ -52,11 +52,16 @@ VDP then applies its normal sprite-drop behavior.
   4-bit components as 16 little-endian 12-bit colors in 32 bytes. Palette and
   fade writes are synchronized to VBlank as required by the Game Gear manual.
 - Game Gear maps the source-derived 256×224 scene to the centered 160×144 LCD
-  viewport at virtual coordinates `(48,24)`. Backgrounds and sprite art are
-  transformed offline with the same fixed ratios, while gameplay coordinates,
-  hitboxes, object state, and timing remain unchanged in the shared logic core.
-- Static photos and text overlays are composed offline from the ROM-derived
-  layers and quantized to the selected target palette.
+  viewport at virtual coordinates `(48,24)`. Gameplay backgrounds and sprite
+  art use the same fixed ratios, while gameplay coordinates, hitboxes, object
+  state, and timing remain unchanged in the shared logic core.
+- The active Game Gear title and English introduction use a readability-specific
+  offline composition made only from ROM-derived layers. The title's complete
+  160-pixel text window is copied at native resolution and the portraits are
+  fitted below it. Introduction photos are fitted into the space left by their
+  text; the original 8×8 glyph cells are kept pixel-for-pixel and reflowed to
+  the LCD's 20 columns instead of being reduced to 5×5 pixels. Text colors and
+  patterns are protected during palette and tile-budget conversion.
 - The broken score display and its HUD assets are omitted at the user's
   request, leaving all 256 background patterns available to gameplay.
 - On SMS only, the 96×96 boss frame is reduced to 64 pixels wide to meet the

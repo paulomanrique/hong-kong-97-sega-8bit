@@ -74,6 +74,7 @@ nothing; search both languages, or ask the API.
 
 - 2026-08-31 — "Vamos converter o hong kong 97 para master system. Já convertemos pra mega drive, entao todo o trabalho de disassembly e compreensão já está feito. a conversão deve ser mais simples, precisando de pouco demake."
 - 2026-09-02 — "vamos converter o jogo ../hong-kong-97-sms para o gamegear"
+- 2026-09-02 — "os textos da tela titulo e da intro estao ilegiveis"
 
 ## Rule 4 — The request, written down, outlives the session
 

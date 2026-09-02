@@ -55,6 +55,45 @@ class Mode4Tests(unittest.TestCase):
         self.assertEqual(surface.getpixel((207, 167)), (255, 0, 0))
         self.assertEqual(surface.getpixel((208, 167)), (0, 0, 0))
 
+    def test_game_gear_title_keeps_rom_pixels_at_native_size(self) -> None:
+        source = Image.new("RGB", (256, 224), (0, 0, 0))
+        for y in range(8, 16):
+            for x in range(56, 200):
+                if (x + y) % 3 == 0:
+                    source.putpixel((x, y), (255, 0, 0))
+        surface, mask = sms.prepare_static_screen_for_target(
+            "intro1", source, "gg"
+        )
+        lcd = surface.crop((48, 24, 208, 168))
+        self.assertEqual(lcd.crop((0, 0, 160, 72)),
+                         source.crop((48, 0, 208, 72)))
+        self.assertIsNotNone(mask)
+        self.assertEqual(sum(mask), sum(
+            source.getpixel((x, y)) != (0, 0, 0)
+            for y in range(72) for x in range(48, 208)
+        ))
+
+    def test_game_gear_intro_reflows_native_8px_glyph_cells(self) -> None:
+        magenta = sms.TEXT_TRANSPARENT
+        overlay = Image.new("RGB", (256, 224), magenta)
+        # Three eight-cell words from the ROM-style 32x28 text tile grid.
+        for word_x in (2, 11, 20):
+            for tile_x in range(word_x, word_x + 8):
+                for y in range(1, 7):
+                    overlay.putpixel((tile_x * 8 + 1, 21 * 8 + y),
+                                     (255, 255, 255))
+        source = Image.new("RGB", (256, 224), (0, 0, 0))
+        photo = Image.new("RGB", (256, 224), (0, 0, 255))
+        surface, mask = sms.prepare_static_screen_for_target(
+            "intro2_l2", source, "gg", overlay, photo
+        )
+        lcd = surface.crop((48, 24, 208, 168))
+        self.assertIsNotNone(mask)
+        # 8+1+8 fits one 20-cell line; the third word moves intact to line 2.
+        self.assertEqual(lcd.getpixel((1, 129)), (255, 255, 255))
+        self.assertEqual(lcd.getpixel((1, 137)), (255, 255, 255))
+        self.assertEqual(sum(mask), 24 * 6)
+
     def test_horizontal_and_vertical_flip_bits(self) -> None:
         image = Image.new("RGB", (256, 224), (0, 0, 0))
         px = image.load()

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
 except ImportError as exc:  # pragma: no cover - exercised by the CLI environment
     raise SystemExit("Pillow is required: python -m pip install Pillow") from exc
 
@@ -49,6 +49,8 @@ GG_LCD_WIDTH = 160
 GG_LCD_HEIGHT = 144
 GG_VIEW_X = 48
 GG_VIEW_Y = 24
+GG_TEXT_COLUMNS = GG_LCD_WIDTH // 8
+TEXT_TRANSPARENT = (255, 0, 255)
 STATIC_TILE_BUDGET = 440
 GAME_TILE_BUDGET = 256
 DIGIT_TILE_RESERVE = 40
@@ -121,6 +123,165 @@ def prepare_background_for_target(image: Image.Image,
     surface = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), (0, 0, 0))
     surface.paste(lcd, (GG_VIEW_X, GG_VIEW_Y))
     return surface
+
+
+def _text_pixel_visible(pixel: Sequence[int]) -> bool:
+    return tuple(pixel[:3]) != TEXT_TRANSPARENT and (
+        len(pixel) < 4 or int(pixel[3]) != 0
+    )
+
+
+def _text_mask_pixels(image: Image.Image) -> list[bool]:
+    return [_text_pixel_visible(pixel)
+            for pixel in image.convert("RGBA").getdata()]
+
+
+def _reflow_gg_text(text_overlay: Image.Image) -> Image.Image:
+    """Reflow ROM-rendered 8x8 English glyph cells without scaling them."""
+    if text_overlay.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
+        raise ValueError("text overlay must be 256x224")
+    source = text_overlay.convert("RGB")
+    blank = Image.new("RGB", (8, 8), TEXT_TRANSPARENT)
+    source_lines: list[list[Image.Image]] = []
+    for tile_y in range(MAP_HEIGHT):
+        cells = [source.crop((tile_x * 8, tile_y * 8,
+                              tile_x * 8 + 8, tile_y * 8 + 8))
+                 for tile_x in range(MAP_WIDTH)]
+        occupied = [any(_text_pixel_visible(pixel)
+                        for pixel in cell.getdata())
+                    for cell in cells]
+        if not any(occupied):
+            continue
+        first = occupied.index(True)
+        last = len(occupied) - list(reversed(occupied)).index(True)
+        source_lines.append(cells[first:last])
+
+    words: list[list[Image.Image]] = []
+    for line in source_lines:
+        word: list[Image.Image] = []
+        for cell in line:
+            if any(_text_pixel_visible(pixel) for pixel in cell.getdata()):
+                word.append(cell)
+            elif word:
+                words.append(word)
+                word = []
+        if word:
+            words.append(word)
+
+    output_lines: list[list[Image.Image]] = []
+    current: list[Image.Image] = []
+    for word in words:
+        while len(word) > GG_TEXT_COLUMNS:
+            if current:
+                output_lines.append(current)
+                current = []
+            output_lines.append(word[:GG_TEXT_COLUMNS])
+            word = word[GG_TEXT_COLUMNS:]
+        needed = len(word) + (1 if current else 0)
+        if current and len(current) + needed > GG_TEXT_COLUMNS:
+            output_lines.append(current)
+            current = []
+        if current:
+            current.append(blank)
+        current.extend(word)
+    if current:
+        output_lines.append(current)
+
+    result = Image.new("RGB", (GG_LCD_WIDTH, len(output_lines) * 8),
+                       TEXT_TRANSPARENT)
+    for row, cells in enumerate(output_lines):
+        for column, cell in enumerate(cells):
+            result.paste(cell, (column * 8, row * 8))
+    return result
+
+
+def _paste_text_overlay(destination: Image.Image, overlay: Image.Image,
+                        xy: tuple[int, int]) -> None:
+    mask = Image.new("L", overlay.size)
+    mask.putdata([255 if value else 0 for value in _text_mask_pixels(overlay)])
+    destination.paste(overlay.convert("RGB"), xy, mask)
+
+
+def _embed_gg_lcd(lcd: Image.Image) -> Image.Image:
+    if lcd.size != (GG_LCD_WIDTH, GG_LCD_HEIGHT):
+        raise ValueError("Game Gear LCD image must be 160x144")
+    surface = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), (0, 0, 0))
+    surface.paste(lcd, (GG_VIEW_X, GG_VIEW_Y))
+    return surface
+
+
+def _embed_gg_mask(lcd_mask: Image.Image) -> list[bool]:
+    surface = Image.new("1", (SCREEN_WIDTH, SCREEN_HEIGHT))
+    surface.paste(lcd_mask.convert("1"), (GG_VIEW_X, GG_VIEW_Y))
+    return [bool(value) for value in surface.getdata()]
+
+
+def prepare_static_screen_for_target(
+    name: str,
+    image: Image.Image,
+    target: str = "sms",
+    text_overlay: Image.Image | None = None,
+    photo_layer: Image.Image | None = None,
+) -> tuple[Image.Image, list[bool] | None]:
+    """Adapt one extracted screen and keep active GG text pixel-native."""
+    if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
+        raise ValueError("static screen must be 256x224")
+    if target == "sms":
+        mask = (_text_mask_pixels(text_overlay)
+                if text_overlay is not None else None)
+        return image.convert("RGB"), mask
+    _component_bits(target)
+
+    if name == "intro1":
+        # The title lettering is baked into BG2 rather than the text layer.
+        # Its complete 160-pixel source window fits the LCD at native size.
+        source = image.convert("RGB")
+        lcd = Image.new("RGB", (GG_LCD_WIDTH, GG_LCD_HEIGHT), (0, 0, 0))
+        header = source.crop((GG_VIEW_X, 0,
+                              GG_VIEW_X + GG_LCD_WIDTH, 72))
+        portraits = ImageOps.fit(source.crop((0, 72, SCREEN_WIDTH,
+                                              SCREEN_HEIGHT)),
+                                 (GG_LCD_WIDTH, 72),
+                                 method=Image.Resampling.NEAREST,
+                                 centering=(0.5, 0.5))
+        lcd.paste(header, (0, 0))
+        lcd.paste(portraits, (0, 72))
+        title_mask = Image.new("1", lcd.size)
+        title_mask.putdata([
+            y < 72 and lcd.getpixel((x, y)) != (0, 0, 0)
+            for y in range(GG_LCD_HEIGHT) for x in range(GG_LCD_WIDTH)
+        ])
+        return _embed_gg_lcd(lcd), _embed_gg_mask(title_mask)
+
+    if re.fullmatch(r"intro[2-5]_l2", name):
+        if text_overlay is None or photo_layer is None:
+            raise ValueError(f"{name} needs extracted photo and text layers")
+        text = _reflow_gg_text(text_overlay)
+        if text.height > GG_LCD_HEIGHT:
+            raise ValueError(f"{name} text exceeds the Game Gear LCD")
+        photo_height = GG_LCD_HEIGHT - text.height
+        photo = ImageOps.fit(photo_layer.convert("RGB").crop(
+            (0, 0, SCREEN_WIDTH, 168)),
+            (GG_LCD_WIDTH, photo_height),
+            method=Image.Resampling.NEAREST,
+            centering=(0.5, 0.5))
+        lcd = Image.new("RGB", (GG_LCD_WIDTH, GG_LCD_HEIGHT), (0, 0, 0))
+        lcd.paste(photo, (0, 0))
+        _paste_text_overlay(lcd, text, (0, photo_height))
+        lcd_mask = Image.new("1", lcd.size)
+        text_mask = Image.new("1", text.size)
+        text_mask.putdata(_text_mask_pixels(text))
+        lcd_mask.paste(text_mask, (0, photo_height))
+        return _embed_gg_lcd(lcd), _embed_gg_mask(lcd_mask)
+
+    surface = prepare_background_for_target(image, target)
+    if text_overlay is None:
+        return surface, None
+    visible = Image.new("1", text_overlay.size)
+    visible.putdata(_text_mask_pixels(text_overlay))
+    lcd_mask = visible.resize((GG_LCD_WIDTH, GG_LCD_HEIGHT),
+                              Image.Resampling.NEAREST)
+    return surface, _embed_gg_mask(lcd_mask)
 
 
 def encode_mode4_tile(pixels: Sequence[int]) -> bytes:
@@ -398,26 +559,6 @@ def build_background(
 def _sanitize(name: str) -> str:
     value = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
     return value or "UNNAMED"
-
-
-def _text_mask(path: Path, target: str = "sms") -> list[bool]:
-    image = Image.open(path).convert("RGBA")
-    if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
-        raise ValueError(f"text overlay {path} is not 256x224")
-    # Extractor convention: opaque magenta is transparent; alpha also works
-    # for synthetic/newer overlays.
-    visible = Image.new("1", image.size)
-    visible.putdata([a != 0 and (r, g, b) != (255, 0, 255)
-                     for r, g, b, a in image.getdata()])
-    if target == "gg":
-        lcd = visible.resize((GG_LCD_WIDTH, GG_LCD_HEIGHT),
-                             Image.Resampling.NEAREST)
-        surface = Image.new("1", (SCREEN_WIDTH, SCREEN_HEIGHT))
-        surface.paste(lcd, (GG_VIEW_X, GG_VIEW_Y))
-        visible = surface
-    else:
-        _component_bits(target)
-    return [bool(value) for value in visible.getdata()]
 
 
 def _write_background(output: Path, name: str, result: BackgroundResult,
@@ -987,9 +1128,14 @@ def generate(root: Path, output: Path, target: str = "sms") -> dict[str, object]
     if not static_paths:
         raise FileNotFoundError(f"no composite screens found in {screens}")
     for path in static_paths:
-        mask_path = screens / "layers" / f"{path.stem}_text.png"
-        mask = _text_mask(mask_path, target) if mask_path.exists() else None
-        source = prepare_background_for_target(Image.open(path), target)
+        layer_dir = screens / "layers"
+        text_path = layer_dir / f"{path.stem}_text.png"
+        photo_path = layer_dir / f"{path.stem}_photo.png"
+        text = Image.open(text_path) if text_path.exists() else None
+        photo = Image.open(photo_path) if photo_path.exists() else None
+        source, mask = prepare_static_screen_for_target(
+            path.stem, Image.open(path), target, text, photo
+        )
         result = build_background(source, STATIC_TILE_BUDGET, mask,
                                   target=target)
         background_entries.append(_write_background(
