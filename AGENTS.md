@@ -73,6 +73,7 @@ nothing; search both languages, or ask the API.
      fecha dizendo o que fez contra isto. -->
 
 - 2026-08-31 — "Vamos converter o hong kong 97 para master system. Já convertemos pra mega drive, entao todo o trabalho de disassembly e compreensão já está feito. a conversão deve ser mais simples, precisando de pouco demake."
+- 2026-09-02 — "vamos converter o jogo ../hong-kong-97-sms para o gamegear"
 
 ## Rule 4 — The request, written down, outlives the session
 
