@@ -12,7 +12,7 @@ src/game_tables.h
 
 # Build and verification output
 build/
+release/
 docs/screenshots/
 __pycache__/
 *.pyc
-
