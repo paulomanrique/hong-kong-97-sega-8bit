@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Headless Hong Kong 97 SMS boot/flow verification in MesenCE.
+# Headless Hong Kong 97 SMS/Game Gear verification in MesenCE.
 # renders / capture a screenshot. Linux counterpart of tools/smoke.ps1.
 #
-#   ./tools/smoke.sh --rom build/hong-kong-97-sms.sms
-#   ./tools/smoke.sh --rom build/hong-kong-97-sms.sms --flow --frames 900
+#   ./tools/smoke.sh --rom build/gg/hong-kong-97-gg.gg
+#   ./tools/smoke.sh --rom build/gg/hong-kong-97-gg.gg --flow --frames 900
 #
 # MESEN_BIN overrides the emulator path (default: MesenCE source build —
 # the stock AOT Mesen 2.1.1 crashes on Ubuntu 26.04, see
@@ -11,18 +11,29 @@
 
 set -euo pipefail
 
-ROM="" ; SHOT="docs/screenshots/m0-boot.png" ; FRAMES=150 ; MODE="boot"
+ROM="" ; MAP="" ; SHOT="docs/screenshots/m0-boot.png" ; FRAMES=150 ; MODE="boot"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --rom)  ROM="$2"; shift 2 ;;
+    --map)  MAP="$2"; shift 2 ;;
     --shot) SHOT="$2"; shift 2 ;;
     --frames) FRAMES="$2"; shift 2 ;;
     --flow) MODE="flow"; shift ;;
+    --cheat) MODE="cheat"; shift ;;
     --capture) shift ;;  # accepted for smoke.ps1 parity; screenshot always kept
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "$ROM" && -f "$ROM" ]] || { echo "ROM not found: $ROM" >&2; exit 2; }
+if [[ "$MODE" != "boot" ]]; then
+  [[ -n "$MAP" && -f "$MAP" ]] || { echo "linker map not found: $MAP" >&2; exit 2; }
+  PHASE_ADDR="$(awk '$2 == "_hk_runtime_phase" { print $1; exit }' "$MAP")"
+  [[ "$PHASE_ADDR" =~ ^[0-9A-Fa-f]+$ ]] || {
+    echo "_hk_runtime_phase not found in linker map: $MAP" >&2; exit 2;
+  }
+else
+  PHASE_ADDR=""
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [[ "$ROM"  = /* ]] || ROM="$(pwd)/$ROM"
@@ -65,7 +76,7 @@ EOF
 export HOME="$WORK/home"
 unset XDG_CONFIG_HOME
 export DOTNET_ROLL_FORWARD="${DOTNET_ROLL_FORWARD:-LatestMajor}"
-export SHOT FRAMES MODE
+export SHOT FRAMES MODE PHASE_ADDR
 
 echo "[smoke] emu : $MESEN_BIN"
 echo "[smoke] rom : $ROM (mode=$MODE frames=$FRAMES)"
@@ -81,10 +92,14 @@ STATUS=$?
 set -e
 
 if [[ -n "${SMOKE_LOG:-}" ]]; then cat "$WORK/mesen.log"; fi
-if [[ -f "$SHOT" && -s "$SHOT" ]]; then
+if [[ "$STATUS" -eq 0 && -f "$SHOT" && -s "$SHOT" ]]; then
   echo "[smoke] PASS - ROM booted and rendered a frame: $SHOT"
   exit 0
 fi
-echo "[smoke] FAIL - no frame captured (mesen exit $STATUS). log:" >&2
+if [[ "$STATUS" -ne 0 ]]; then
+  echo "[smoke] FAIL - Mesen exited with status $STATUS. log:" >&2
+else
+  echo "[smoke] FAIL - no frame captured. log:" >&2
+fi
 cat "$WORK/mesen.log" >&2 || true
 exit 1

@@ -1,4 +1,4 @@
-/* Hong Kong 97 native Sega Master System runtime (SMSlib / SDCC). */
+/* Hong Kong 97 native Sega Master System / Game Gear runtime. */
 #include <string.h>
 #include <SMSlib.h>
 
@@ -8,9 +8,20 @@
 #include "sms_assets.h"
 #include "banked_assets.h"
 
+#ifdef TARGET_GG
+#define NT_VRAM 0x3800u
+#define UNUSED_SPRITE_Y 0xD0u
+typedef u16 hk_color_t;
+#define load_bg_palette GG_loadBGPalette
+#define load_sprite_palette GG_loadSpritePalette
+#else
 #define NT_VRAM 0x3700u
+#define UNUSED_SPRITE_Y 0xE0u
+typedef u8 hk_color_t;
+#define load_bg_palette SMS_loadBGPalette
+#define load_sprite_palette SMS_loadSpritePalette
+#endif
 #define NT_BYTES (32u * 28u * 2u)
-#define NT_WRITE(x,y) (0x7700u + ((((u16)(y) << 5) + (x)) << 1))
 #define SPRITE_TILE_BASE 256u
 #define SPRITE_SOURCE_TILE_CAPACITY 512u
 #define SPRITE_CACHE_MISS 0xFFu
@@ -20,12 +31,13 @@ extern unsigned char SpriteTableY[64];
 extern unsigned char SpriteTableXN[128];
 extern unsigned char SpriteNextFree;
 
-static u8 bg_palette[16], sprite_palette[16], flash_palette[16];
+static hk_color_t bg_palette[16], sprite_palette[16], flash_palette[16];
 static u8 language;
 static u16 sprite_cache_source[SMS_SPRITE_CACHE_SIZE];
 static u8 sprite_cache_mark[SMS_SPRITE_CACHE_SIZE];
 static u8 sprite_cache_slot[SPRITE_SOURCE_TILE_CAPACITY];
 static u8 sprite_cache_generation, sprite_cache_victim;
+volatile u8 hk_runtime_phase;
 
 #ifdef HK97_PROFILE
 volatile u16 hk_profile_logic_ticks;
@@ -72,7 +84,7 @@ static void hide_physical_sprite_tail(void)
 {
     u8 used = SpriteNextFree, i;
     for (i = used; i < 64; ++i) {
-        SpriteTableY[i] = 0xE0;
+        SpriteTableY[i] = UNUSED_SPRITE_Y;
         SpriteTableXN[i * 2] = 0;
         SpriteTableXN[i * 2 + 1] = 0;
     }
@@ -89,7 +101,7 @@ static void load_bundle(const u8 *bundle, u8 bank)
     tile_count = rd16(bundle + 8);
     tiles_offset = rd16(bundle + 12);
     tilemap_offset = rd16(bundle + 14);
-    memcpy(bg_palette, bundle + SMS_BG_CRAM_OFFSET, 16);
+    memcpy(bg_palette, bundle + SMS_BG_CRAM_OFFSET, SMS_BG_PALETTE_BYTES);
     SMS_VRAMmemset(0, 0, NT_VRAM);
     SMS_VRAMmemcpy(0, bundle + tiles_offset, tile_count * 32u);
     SMS_VRAMmemcpy(NT_VRAM, bundle + tilemap_offset, NT_BYTES);
@@ -118,31 +130,41 @@ static void load_screen(enum ScreenId id)
     }
     SMS_initSprites();
     hide_physical_sprite_tail();
-    SMS_loadBGPalette(bg_palette);
+    SMS_waitForVBlank();
+    load_bg_palette(bg_palette);
     SMS_displayOn();
 }
 
-static u8 scale_color(u8 c, u8 step)
+static hk_color_t scale_color(hk_color_t c, u8 step)
 {
+#ifdef TARGET_GG
+    u8 r = c & 15, g = (c >> 4) & 15, b = (c >> 8) & 15;
+    r = (u8)((r * step + 7) / 15);
+    g = (u8)((g * step + 7) / 15);
+    b = (u8)((b * step + 7) / 15);
+    return r | ((hk_color_t)g << 4) | ((hk_color_t)b << 8);
+#else
     u8 r = c & 3, g = (c >> 2) & 3, b = (c >> 4) & 3;
     r = (u8)((r * step + 7) / 15);
     g = (u8)((g * step + 7) / 15);
     b = (u8)((b * step + 7) / 15);
     return r | (g << 2) | (b << 4);
+#endif
 }
 
 static void fade(u8 fade_in, u8 include_sprites)
 {
-    u8 step, i, pal[16];
+    u8 step, i;
+    hk_color_t pal[16];
     for (step = 0; step < 15; ++step) {
         u8 level = fade_in ? (u8)(step + 1) : (u8)(14 - step);
+        SMS_waitForVBlank();
         for (i = 0; i < 16; ++i) pal[i] = scale_color(bg_palette[i], level);
-        SMS_loadBGPalette(pal);
+        load_bg_palette(pal);
         if (include_sprites) {
             for (i = 0; i < 16; ++i) pal[i] = scale_color(sprite_palette[i], level);
-            SMS_loadSpritePalette(pal);
+            load_sprite_palette(pal);
         }
-        SMS_waitForVBlank();
     }
 }
 
@@ -155,7 +177,24 @@ static u16 input_mask(void)
     if (keys & PORT_A_KEY_RIGHT) out |= HK_KEY_RIGHT;
     if (keys & PORT_A_KEY_1) out |= HK_KEY_FIRE | HK_KEY_1;
     if (keys & PORT_A_KEY_2) out |= HK_KEY_FIRE | HK_KEY_2;
+#ifdef TARGET_GG
+    if (keys & GG_KEY_START) out |= HK_KEY_START;
+#endif
     return out;
+}
+
+static u8 start_requested(u16 pressed)
+{
+#ifdef TARGET_GG
+    return (pressed & HK_KEY_START) != 0;
+#else
+    (void)pressed;
+    if (SMS_queryPauseRequested()) {
+        SMS_resetPauseRequest();
+        return 1;
+    }
+    return 0;
+#endif
 }
 
 static u8 wait_frames_or_button(u16 frames)
@@ -165,7 +204,7 @@ static u8 wait_frames_or_button(u16 frames)
         u16 now, pressed;
         SMS_waitForVBlank();
         now = input_mask(); pressed = now & ~previous; previous = now;
-        if (SMS_queryPauseRequested()) { SMS_resetPauseRequest(); return 1; }
+        if (start_requested(pressed)) return 1;
         if (pressed) return 1;
         if (frames != 0xFFFFu) --frames;
     }
@@ -182,9 +221,12 @@ static u8 language_select(void)
         SMS_waitForVBlank(); now = input_mask(); pressed = now & ~previous; previous = now;
         if (pressed & HK_KEY_UP) row = (row + 3) & 3;
         if (pressed & HK_KEY_DOWN) row = (row + 1) & 3;
-        if ((pressed & HK_KEY_FIRE) || SMS_queryPauseRequested()) break;
+        if ((pressed & HK_KEY_FIRE) || start_requested(pressed)) break;
     }
-    SMS_resetPauseRequest(); fade(0, 0); return row;
+#ifndef TARGET_GG
+    SMS_resetPauseRequest();
+#endif
+    fade(0, 0); return row;
 }
 
 static void title_sequence(void)
@@ -212,6 +254,7 @@ static void intro_pages(void)
     u8 page, manual = 0, kstep = 0;
 
 title_rebuild:
+    hk_runtime_phase = 1;
     load_screen(SCR_INTRO1);
     fade(1, 0);
     {
@@ -232,6 +275,7 @@ title_rebuild:
                         fade(0, 0);
                         load_screen(SCR_CHEAT);
                         fade(1, 0);
+                        hk_runtime_phase = 4;
                         hk_audio_play_cheat();
                         egg_previous = input_mask();
                         for (;;) {
@@ -241,10 +285,7 @@ title_rebuild:
                             egg_now = input_mask();
                             egg_pressed = egg_now & ~egg_previous;
                             egg_previous = egg_now;
-                            if (SMS_queryPauseRequested()) {
-                                SMS_resetPauseRequest();
-                                break;
-                            }
+                            if (start_requested(egg_pressed)) break;
                             if (egg_pressed & (HK_KEY_1 | HK_KEY_2)) break;
                         }
                         hk_audio_stop_cheat();
@@ -258,10 +299,7 @@ title_rebuild:
 
             /* SMS Pause is the controller's Start equivalent. No face button
              * advances this first presentation screen. */
-            if (SMS_queryPauseRequested()) {
-                SMS_resetPauseRequest();
-                break;
-            }
+            if (start_requested(pressed)) break;
         }
     }
     fade(0, 0);
@@ -275,6 +313,7 @@ title_rebuild:
 
 static void game_over_screens(void)
 {
+    hk_runtime_phase = 3;
     load_screen(SCR_GAMEOVER1);
     fade(1,0); wait_frames_or_button(0xFFFF); fade(0,0);
 }
@@ -284,40 +323,48 @@ static void load_game_background(u8 index)
     SMS_displayOff();
 #ifdef HK97_BLANK_GAME_BG
     (void)index;
-    copy_banked(bg_palette, gamebg0_bin + SMS_BG_CRAM_OFFSET, 16,
+    copy_banked(bg_palette, gamebg0_bin + SMS_BG_CRAM_OFFSET,
+                SMS_BG_PALETTE_BYTES,
                 gamebg0_bin_bank);
-    memcpy(flash_palette, bg_palette, 16);
+    memcpy(flash_palette, bg_palette, SMS_BG_PALETTE_BYTES);
     SMS_VRAMmemset(0, 0, NT_VRAM);
     SMS_VRAMmemset(NT_VRAM, 0, NT_BYTES);
 #else
     switch (index) {
     case 0:
         load_bundle(gamebg0_bin, gamebg0_bin_bank);
-        copy_banked(flash_palette, gamebg0_flash_cram, 16, gamebg0_flash_cram_bank);
+        copy_banked(flash_palette, gamebg0_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg0_flash_cram_bank);
         break;
     case 1:
         load_bundle(gamebg1_bin, gamebg1_bin_bank);
-        copy_banked(flash_palette, gamebg1_flash_cram, 16, gamebg1_flash_cram_bank);
+        copy_banked(flash_palette, gamebg1_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg1_flash_cram_bank);
         break;
     case 2:
         load_bundle(gamebg2_bin, gamebg2_bin_bank);
-        copy_banked(flash_palette, gamebg2_flash_cram, 16, gamebg2_flash_cram_bank);
+        copy_banked(flash_palette, gamebg2_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg2_flash_cram_bank);
         break;
     case 3:
         load_bundle(gamebg3_bin, gamebg3_bin_bank);
-        copy_banked(flash_palette, gamebg3_flash_cram, 16, gamebg3_flash_cram_bank);
+        copy_banked(flash_palette, gamebg3_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg3_flash_cram_bank);
         break;
     case 4:
         load_bundle(gamebg4_bin, gamebg4_bin_bank);
-        copy_banked(flash_palette, gamebg4_flash_cram, 16, gamebg4_flash_cram_bank);
+        copy_banked(flash_palette, gamebg4_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg4_flash_cram_bank);
         break;
     default:
         load_bundle(gamebg5_bin, gamebg5_bin_bank);
-        copy_banked(flash_palette, gamebg5_flash_cram, 16, gamebg5_flash_cram_bank);
+        copy_banked(flash_palette, gamebg5_flash_cram,
+                    SMS_BG_PALETTE_BYTES, gamebg5_flash_cram_bank);
         break;
     }
 #endif
-    copy_banked(sprite_palette, sprites_cram, 16, sprites_cram_bank);
+    copy_banked(sprite_palette, sprites_cram, SMS_BG_PALETTE_BYTES,
+                sprites_cram_bank);
     copy_banked_to_vram(SPRITE_TILE_BASE * 32u, sprites_seed_tiles,
                         sprites_seed_tiles_size, sprites_seed_tiles_bank);
     {
@@ -332,7 +379,8 @@ static void load_game_background(u8 index)
     }
     sprite_cache_generation = 0;
     sprite_cache_victim = 0;
-    SMS_loadBGPalette(bg_palette); SMS_loadSpritePalette(sprite_palette);
+    SMS_waitForVBlank();
+    load_bg_palette(bg_palette); load_sprite_palette(sprite_palette);
     SMS_initSprites(); hide_physical_sprite_tail(); SMS_displayOn();
 }
 
@@ -377,12 +425,28 @@ static u8 load_sprite_tile(u16 source)
     return 0; /* A frame can reference at most the 64 physical SAT entries. */
 }
 
+#ifdef TARGET_GG
+static s16 project_x(s16 x)
+{
+    return (s16)(48 + (x * 5 + 4) / 8);
+}
+
+static s16 project_y(s16 y)
+{
+    return (s16)(24 + (y * 9 + 7) / 14);
+}
+#endif
+
 static void add_metasprite(u8 anim, u8 frame, s16 x, s16 y)
 {
     const SmsSpriteFrame *f = sprite_frame(anim, frame);
     const SmsSpritePart *p;
     u8 remaining;
     if (!f) return;
+#ifdef TARGET_GG
+    x = project_x(x);
+    y = project_y(y);
+#endif
     p = &sms_sprite_parts[f->first_part];
     remaining = f->part_count;
     while (remaining--) {
@@ -439,6 +503,7 @@ static void run_game(void)
     u16 previous = 0;
     u8 old_flash = 0;
     hk_game_begin(); load_game_background(hk_current_background); fade(1,1);
+    hk_runtime_phase = 2;
 #ifdef HK97_PROFILE
     hk_profile_logic_ticks = 0;
     hk_profile_render_calls = 0;
@@ -447,15 +512,16 @@ static void run_game(void)
 #endif
     for (;;) {
         u16 now, pressed;
-        SMS_waitForVBlank(); now=input_mask(); pressed=now & ~previous; previous=now;
+        SMS_waitForVBlank();
+        if (hk_background_flash != old_flash) {
+            load_bg_palette(hk_background_flash ? flash_palette : bg_palette);
+            old_flash = hk_background_flash;
+        }
+        now=input_mask(); pressed=now & ~previous; previous=now;
         if (hk_game_step(now,pressed)) break;
 #ifdef HK97_PROFILE
         ++hk_profile_logic_ticks;
 #endif
-        if (hk_background_flash != old_flash) {
-            SMS_loadBGPalette(hk_background_flash ? flash_palette : bg_palette);
-            old_flash = hk_background_flash;
-        }
 #ifndef HK97_NO_RENDER
         render_game();
 #endif
@@ -465,17 +531,35 @@ static void run_game(void)
 
 void main(void)
 {
+#ifndef TARGET_GG
     /* These live in different VDP registers and cannot be ORed together. */
     SMS_VDPturnOnFeature(VDPFEATURE_EXTRAHEIGHT);
     SMS_VDPturnOnFeature(VDPFEATURE_224LINES);
+#endif
     SMS_useFirstHalfTilesforSprites(0);
     SMS_setSpriteMode(SPRITEMODE_TALL);
     SMS_displayOff(); SMS_VRAMmemset(0,0,0x4000); SMS_displayOn();
     hk_audio_init();
+    hk_runtime_phase = 0;
     language = 2; /* English, matching the original menu's third row. */
     for (;;) { intro_pages(); run_game(); game_over_screens(); }
 }
 
-SMS_EMBED_SEGA_ROM_HEADER(0x0000, 0);
+/* The build is power-of-two padded to 512 KiB. Verified commercial 512 KiB
+ * Game Gear headers retain size nibble 0; use the matching export region. */
+#ifdef TARGET_GG
+#define HK_SEGA_REGION_SIZE 0x70
+#else
+#define HK_SEGA_REGION_SIZE 0x40
+#endif
+const __at (0x7ff0) unsigned char hk_sega_header[16] = {
+    'T','M','R',' ','S','E','G','A',
+    0xFF,0xFF,0xFF,0xFF,0x00,0x00,0x00,HK_SEGA_REGION_SIZE
+};
+#ifdef TARGET_GG
+SMS_EMBED_SDSC_HEADER_AUTO_DATE(0, 1, "Paulo Manrique",
+                                "Hong Kong 97 GG", "Native port");
+#else
 SMS_EMBED_SDSC_HEADER_AUTO_DATE(0, 1, "Paulo Manrique",
                                 "Hong Kong 97 SMS", "Native port");
+#endif

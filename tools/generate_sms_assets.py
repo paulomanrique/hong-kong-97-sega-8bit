@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic Sega Master System Mode-4 assets from extracted HK97 data.
+"""Build deterministic SMS/Game Gear Mode-4 assets from extracted HK97 data.
 
 This is an offline converter.  It consumes PNG/WAV/JSON files produced by the
 repository's extractors; it never reads, embeds, or executes the original ROM.
@@ -12,10 +12,10 @@ Background bundle layout (all integers little-endian)::
     0x06  u8       height in tiles (28)
     0x07  u8       flags (bit 0 gameplay, bit 1 protected-tile conflict)
     0x08  u16      tile count
-    0x0a  u16      palette byte count (16)
-    0x0c  u16      tile-data offset (32)
+    0x0a  u16      palette byte count (16 SMS, 32 Game Gear)
+    0x0c  u16      tile-data offset (32 SMS, 48 Game Gear)
     0x0e  u16      tilemap offset
-    0x10  u8[16]   SMS CRAM palette
+    0x10  palette  SMS u8[16], or Game Gear little-endian u16[16]
           ...      32-byte Mode-4 patterns, then 32x28 little-endian entries
 
 The even PCM sample is stored in the high nibble of each music byte.  Sprite
@@ -45,6 +45,10 @@ SCREEN_WIDTH = 256
 SCREEN_HEIGHT = 224
 MAP_WIDTH = 32
 MAP_HEIGHT = 28
+GG_LCD_WIDTH = 160
+GG_LCD_HEIGHT = 144
+GG_VIEW_X = 48
+GG_VIEW_Y = 24
 STATIC_TILE_BUDGET = 440
 GAME_TILE_BUDGET = 256
 DIGIT_TILE_RESERVE = 40
@@ -55,6 +59,7 @@ DIGIT_COLOR_INDICES = (14, 15)
 # indices 256..439 are safe: 184 physical patterns. In native 8x16 mode each
 # SAT entry consumes an aligned pair, so the cache holds 92 sprite units.
 SPRITE_TILE_BUDGET = 92
+GG_SPRITE_TILE_BUDGET = 96
 GAMEPLAY_SUBTRACT = (24 * 8, 16 * 8, 8 * 8)
 BANK_SIZE = 16 * 1024
 BG_BUNDLE_HEADER = struct.Struct("<4sBBBBHHHH")
@@ -68,19 +73,54 @@ HFLIP_BIT = 0x0200
 VFLIP_BIT = 0x0400
 
 
-def _hw_component(value: int) -> int:
-    """Round an 8-bit component to the nearest SMS 2-bit value (0..3)."""
-    return (int(value) * 3 + 127) // 255
+def _component_bits(target: str) -> int:
+    if target not in ("sms", "gg"):
+        raise ValueError(f"unsupported target {target!r}")
+    return 4 if target == "gg" else 2
 
 
-def _hw_rgb(rgb: Sequence[int]) -> tuple[int, int, int]:
-    return tuple(_hw_component(v) * 85 for v in rgb[:3])  # type: ignore[return-value]
+def _hw_component(value: int, bits: int = 2) -> int:
+    """Project an 8-bit component to a native 2-bit or 4-bit component."""
+    levels = (1 << bits) - 1
+    return (int(value) * levels + 127) // 255
 
 
-def pack_cram_color(rgb: Sequence[int]) -> int:
-    """Pack RGB as SMS CRAM: --BBGGRR, two bits per component."""
-    r, g, b = (_hw_component(v) for v in rgb[:3])
-    return r | (g << 2) | (b << 4)
+def _hw_rgb(rgb: Sequence[int], bits: int = 2) -> tuple[int, int, int]:
+    levels = (1 << bits) - 1
+    return tuple((_hw_component(v, bits) * 255 + levels // 2) // levels
+                 for v in rgb[:3])  # type: ignore[return-value]
+
+
+def pack_cram_color(rgb: Sequence[int], target: str = "sms") -> int:
+    """Pack RGB as SMS 00BBGGRR or Game Gear 0000BBBBGGGGRRRR."""
+    bits = _component_bits(target)
+    r, g, b = (_hw_component(v, bits) for v in rgb[:3])
+    return r | (g << bits) | (b << (bits * 2))
+
+
+def encode_cram_palette(palette: Sequence[Sequence[int]],
+                        target: str = "sms") -> bytes:
+    colors = [pack_cram_color(color, target) for color in palette]
+    if target == "gg":
+        return struct.pack(f"<{len(colors)}H", *colors)
+    return bytes(colors)
+
+
+def prepare_background_for_target(image: Image.Image,
+                                  target: str = "sms") -> Image.Image:
+    """Place a source-derived screen in the target's Mode-4 virtual surface."""
+    if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
+        raise ValueError(
+            f"background must be {SCREEN_WIDTH}x{SCREEN_HEIGHT}, got {image.size}"
+        )
+    image = image.convert("RGB")
+    if target == "sms":
+        return image
+    _component_bits(target)
+    lcd = image.resize((GG_LCD_WIDTH, GG_LCD_HEIGHT), Image.Resampling.NEAREST)
+    surface = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), (0, 0, 0))
+    surface.paste(lcd, (GG_VIEW_X, GG_VIEW_Y))
+    return surface
 
 
 def encode_mode4_tile(pixels: Sequence[int]) -> bytes:
@@ -132,8 +172,8 @@ def _nearest_palette_index(rgb: tuple[int, int, int],
     ))
 
 
-def _median_cut_colors(pixels: list[tuple[int, int, int]],
-                       count: int) -> list[tuple[int, int, int]]:
+def _median_cut_colors(pixels: list[tuple[int, int, int]], count: int,
+                       component_bits: int = 2) -> list[tuple[int, int, int]]:
     if count <= 0 or not pixels:
         return []
     unique = sorted(set(pixels))
@@ -153,7 +193,8 @@ def _median_cut_colors(pixels: list[tuple[int, int, int]],
     used = sorted(set(quantized.getdata()))
     colors = [tuple(raw[i * 3:i * 3 + 3]) for i in used]
     # Re-project after median-cut averaging so every emitted color is native.
-    return list(dict.fromkeys(_hw_rgb(c) for c in colors))[:count]
+    return list(dict.fromkeys(_hw_rgb(c, component_bits)
+                              for c in colors))[:count]
 
 
 def make_sms_palette(
@@ -161,12 +202,14 @@ def make_sms_palette(
     color_count: int,
     protected_mask: Sequence[bool] | None = None,
     fixed_tail: Sequence[tuple[int, int, int]] = (),
+    target: str = "sms",
 ) -> tuple[list[tuple[int, int, int]], bytes, dict[str, object]]:
-    """Quantize to native SMS colors, retaining protected colors first."""
-    rgb_pixels = [_hw_rgb(p) for p in image.convert("RGB").getdata()]
+    """Quantize to native SMS/GG colors, retaining protected colors first."""
+    bits = _component_bits(target)
+    rgb_pixels = [_hw_rgb(p, bits) for p in image.convert("RGB").getdata()]
     if protected_mask is not None and len(protected_mask) != len(rgb_pixels):
         raise ValueError("protected mask dimensions do not match the image")
-    fixed = [_hw_rgb(color) for color in fixed_tail]
+    fixed = [_hw_rgb(color, bits) for color in fixed_tail]
     if len(fixed) > color_count:
         raise ValueError("fixed palette colors exceed palette capacity")
     free_count = color_count - len(fixed)
@@ -180,7 +223,7 @@ def make_sms_palette(
     palette = ordered_protected[:free_count]
     remaining = free_count - len(palette)
     if remaining:
-        candidates = _median_cut_colors(rgb_pixels, remaining)
+        candidates = _median_cut_colors(rgb_pixels, remaining, bits)
         palette.extend(c for c in candidates if c not in palette)
     # Median-cut may deduplicate after hardware projection. Fill from exact
     # native colors by frequency before padding the fixed-size CRAM block.
@@ -217,10 +260,11 @@ class BackgroundResult:
     tilemap: list[int]
     report: dict[str, object]
     flash_palette: list[tuple[int, int, int]] | None = None
+    target: str = "sms"
 
     @property
     def cram(self) -> bytes:
-        return bytes(pack_cram_color(color) for color in self.palette)
+        return encode_cram_palette(self.palette, self.target)
 
     @property
     def tile_bytes(self) -> bytes:
@@ -237,6 +281,7 @@ def build_background(
     protected_mask: Sequence[bool] | None = None,
     fixed_palette_tail: Sequence[tuple[int, int, int]] = (),
     palette_subtract: tuple[int, int, int] | None = None,
+    target: str = "sms",
 ) -> BackgroundResult:
     """Convert one 256x224 image, clustering patterns when over budget."""
     if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
@@ -245,8 +290,9 @@ def build_background(
         )
     if not 1 <= budget <= 512:
         raise ValueError("background tile budget must be in 1..512")
+    bits = _component_bits(target)
     raw_palette, indexed, palette_report = make_sms_palette(
-        image, 16, protected_mask, fixed_palette_tail
+        image, 16, protected_mask, fixed_palette_tail, target
     )
     flash_palette = None
     if palette_subtract is None:
@@ -258,7 +304,7 @@ def build_background(
             color if index >= fixed_start else _hw_rgb(tuple(
                 max(0, color[channel] - palette_subtract[channel])
                 for channel in range(3)
-            ))
+            ), bits)
             for index, color in enumerate(raw_palette)
         ]
     records: list[tuple[bytes, int, bool]] = []
@@ -346,7 +392,7 @@ def build_background(
         "palette_distance_squared": squared_error,
     }
     return BackgroundResult(palette, representatives, tilemap, report,
-                            flash_palette)
+                            flash_palette, target)
 
 
 def _sanitize(name: str) -> str:
@@ -354,14 +400,24 @@ def _sanitize(name: str) -> str:
     return value or "UNNAMED"
 
 
-def _text_mask(path: Path) -> list[bool]:
+def _text_mask(path: Path, target: str = "sms") -> list[bool]:
     image = Image.open(path).convert("RGBA")
     if image.size != (SCREEN_WIDTH, SCREEN_HEIGHT):
         raise ValueError(f"text overlay {path} is not 256x224")
     # Extractor convention: opaque magenta is transparent; alpha also works
     # for synthetic/newer overlays.
-    return [a != 0 and (r, g, b) != (255, 0, 255)
-            for r, g, b, a in image.getdata()]
+    visible = Image.new("1", image.size)
+    visible.putdata([a != 0 and (r, g, b) != (255, 0, 255)
+                     for r, g, b, a in image.getdata()])
+    if target == "gg":
+        lcd = visible.resize((GG_LCD_WIDTH, GG_LCD_HEIGHT),
+                             Image.Resampling.NEAREST)
+        surface = Image.new("1", (SCREEN_WIDTH, SCREEN_HEIGHT))
+        surface.paste(lcd, (GG_VIEW_X, GG_VIEW_Y))
+        visible = surface
+    else:
+        _component_bits(target)
+    return [bool(value) for value in visible.getdata()]
 
 
 def _write_background(output: Path, name: str, result: BackgroundResult,
@@ -401,7 +457,7 @@ def _write_background(output: Path, name: str, result: BackgroundResult,
         "report": result.report,
     }
     if result.flash_palette is not None:
-        flash = bytes(pack_cram_color(color) for color in result.flash_palette)
+        flash = encode_cram_palette(result.flash_palette, result.target)
         flash_path = bg_dir / f"{name}_flash.cram"
         flash_path.write_bytes(flash)
         entry["flash_cram"] = f"bg/{name}_flash.cram"
@@ -529,12 +585,14 @@ def _write_digits(output: Path, build: DigitBuild) -> dict[str, object]:
     }
 
 
-def _sprite_palette(images: Iterable[Image.Image]) -> list[tuple[int, int, int]]:
+def _sprite_palette(images: Iterable[Image.Image],
+                    target: str = "sms") -> list[tuple[int, int, int]]:
+    bits = _component_bits(target)
     pixels: list[tuple[int, int, int]] = []
     for image in images:
-        pixels.extend(_hw_rgb((r, g, b)) for r, g, b, a
+        pixels.extend(_hw_rgb((r, g, b), bits) for r, g, b, a
                       in image.convert("RGBA").getdata() if a)
-    opaque = _median_cut_colors(pixels, 15)
+    opaque = _median_cut_colors(pixels, 15, bits)
     counts = Counter(pixels)
     for color in sorted(counts, key=lambda c: (-counts[c], c)):
         if len(opaque) >= 15:
@@ -573,24 +631,33 @@ def _sprite_tile_distance(tile: bytes, representative: bytes,
 
 def build_sprite_assets(
     frames_by_anim: dict[int, list[tuple[Image.Image, int,
-                                         dict[str, object] | None]]]
+                                         dict[str, object] | None]]],
+    target: str = "sms",
 ) -> SpriteBuild:
     """Convert animation images to one palette/tile set and metasprites."""
     prepared: dict[int, list[tuple[Image.Image, int,
-                                  dict[str, object] | None, float]]] = {}
+                                  dict[str, object] | None, float, float]]] = {}
     for anim in sorted(frames_by_anim):
         prepared[anim] = []
         for image, duration, meta in frames_by_anim[anim]:
             rgba = image.convert("RGBA")
-            scale = 1.0
-            if anim == 0x01 and rgba.width > 64:
-                scale = 64 / rgba.width
-                height = max(1, round(rgba.height * scale))
+            scale_x = scale_y = 1.0
+            if target == "gg":
+                scale_x = GG_LCD_WIDTH / SCREEN_WIDTH
+                scale_y = GG_LCD_HEIGHT / SCREEN_HEIGHT
+                width = max(1, round(rgba.width * scale_x))
+                height = max(1, round(rgba.height * scale_y))
+                rgba = rgba.resize((width, height), Image.Resampling.NEAREST)
+            elif target == "sms" and anim == 0x01 and rgba.width > 64:
+                scale_x = scale_y = 64 / rgba.width
+                height = max(1, round(rgba.height * scale_y))
                 rgba = rgba.resize((64, height), Image.Resampling.NEAREST)
+            else:
+                _component_bits(target)
             prepared[anim].append((rgba, max(1, min(255, int(duration))),
-                                   meta, scale))
+                                   meta, scale_x, scale_y))
     palette = _sprite_palette(
-        frame[0] for frames in prepared.values() for frame in frames
+        (frame[0] for frames in prepared.values() for frame in frames), target
     )
     tiles: list[bytes] = []
     tile_index: dict[bytes, int] = {}
@@ -603,15 +670,19 @@ def build_sprite_assets(
     for anim in sorted(prepared):
         anim_first[anim] = len(frame_out)
         anim_count[anim] = len(prepared[anim])
-        for frame_index, (image, duration, meta, scale) in enumerate(prepared[anim]):
+        for frame_index, (image, duration, meta, scale_x,
+                          scale_y) in enumerate(prepared[anim]):
             rgba = list(image.getdata())
             indexed = bytearray()
             for r, g, b, a in rgba:
                 indexed.append(0 if a == 0 else _nearest_palette_index(
-                    _hw_rgb((r, g, b)), palette[1:]) + 1)
-            origin_x, origin_y = _metadata_origin(meta, image.width, image.height)
-            origin_x = round(origin_x * scale)
-            origin_y = round(origin_y * scale)
+                    _hw_rgb((r, g, b), _component_bits(target)), palette[1:]) + 1)
+            source_width = max(1, round(image.width / scale_x))
+            source_height = max(1, round(image.height / scale_y))
+            origin_x, origin_y = _metadata_origin(meta, source_width,
+                                                  source_height)
+            origin_x = round(origin_x * scale_x)
+            origin_y = round(origin_y * scale_y)
             first_part = len(parts)
             for ty in range((image.height + 15) // 16):
                 for tx in range((image.width + 7) // 8):
@@ -671,12 +742,14 @@ def build_sprite_assets(
             })
     source_tile_count = len(tiles)
     counts = Counter(tile for _dx, _dy, tile in parts)
+    sprite_tile_budget = (GG_SPRITE_TILE_BUDGET if target == "gg"
+                          else SPRITE_TILE_BUDGET)
     cache_seed = sorted(
         range(source_tile_count),
         key=lambda index: (-counts[index], tiles[index]),
-    )[:SPRITE_TILE_BUDGET]
+    )[:sprite_tile_budget]
     report = {
-        "budget": SPRITE_TILE_BUDGET,
+        "budget": sprite_tile_budget,
         "source_unique_patterns": source_tile_count,
         "rom_patterns": len(tiles),
         "cache_seed_patterns": len(cache_seed),
@@ -708,8 +781,9 @@ def _load_animation_frames(gfx: Path, metadata_path: Path) -> dict[
     return result
 
 
-def _write_sprite_assets(output: Path, build: SpriteBuild) -> dict[str, object]:
-    cram = bytes(pack_cram_color(color) for color in build.palette)
+def _write_sprite_assets(output: Path, build: SpriteBuild,
+                         target: str = "sms") -> dict[str, object]:
+    cram = encode_cram_palette(build.palette, target)
     def encode_pair(pair: bytes) -> bytes:
         return encode_mode4_tile(pair[:64]) + encode_mode4_tile(pair[64:])
 
@@ -820,7 +894,9 @@ def convert_music(path: Path, output: Path, target_rate: int,
 
 
 def _write_header(output: Path, backgrounds: list[dict[str, object]],
-                  sprites: SpriteBuild) -> None:
+                  sprites: SpriteBuild, target: str = "sms") -> None:
+    sprite_tile_budget = (GG_SPRITE_TILE_BUDGET if target == "gg"
+                          else SPRITE_TILE_BUDGET)
     lines = [
         "/* Generated by tools/generate_sms_assets.py. Do not edit. */",
         "#ifndef HK97_SMS_ASSETS_H",
@@ -833,8 +909,9 @@ def _write_header(output: Path, backgrounds: list[dict[str, object]],
         "#define SMS_BG_CRAM_OFFSET 16",
         "#define SMS_BG_WIDTH_TILES 32",
         "#define SMS_BG_HEIGHT_TILES 28",
+        f"#define SMS_BG_PALETTE_BYTES {32 if target == 'gg' else 16}",
         f"#define SMS_GAME_BG_TILE_BUDGET {GAME_TILE_BUDGET}",
-        f"#define SMS_SPRITE_CACHE_SIZE {SPRITE_TILE_BUDGET}",
+        f"#define SMS_SPRITE_CACHE_SIZE {sprite_tile_budget}",
         "",
         "typedef struct {",
         "    uint8_t magic[4], version, width_tiles, height_tiles, flags;",
@@ -894,7 +971,8 @@ def _gameplay_backgrounds(gfx: Path) -> dict[int, Image.Image]:
     return backgrounds
 
 
-def generate(root: Path, output: Path) -> dict[str, object]:
+def generate(root: Path, output: Path, target: str = "sms") -> dict[str, object]:
+    _component_bits(target)
     gfx = root / "res" / "gfx"
     screens = gfx / "screens"
     anim_meta = root / "docs" / "anims.json"
@@ -910,36 +988,46 @@ def generate(root: Path, output: Path) -> dict[str, object]:
         raise FileNotFoundError(f"no composite screens found in {screens}")
     for path in static_paths:
         mask_path = screens / "layers" / f"{path.stem}_text.png"
-        mask = _text_mask(mask_path) if mask_path.exists() else None
-        result = build_background(Image.open(path).convert("RGB"),
-                                  STATIC_TILE_BUDGET, mask)
+        mask = _text_mask(mask_path, target) if mask_path.exists() else None
+        source = prepare_background_for_target(Image.open(path), target)
+        result = build_background(source, STATIC_TILE_BUDGET, mask,
+                                  target=target)
         background_entries.append(_write_background(
             output, path.stem, result, gameplay=False
         ))
 
     gameplay_images = _gameplay_backgrounds(gfx)
     for index in range(6):
-        result = build_background(gameplay_images[index], GAME_TILE_BUDGET,
-                                  palette_subtract=GAMEPLAY_SUBTRACT)
+        source = prepare_background_for_target(gameplay_images[index], target)
+        result = build_background(source, GAME_TILE_BUDGET,
+                                  palette_subtract=GAMEPLAY_SUBTRACT,
+                                  target=target)
         background_entries.append(_write_background(
             output, f"gamebg{index}", result, gameplay=True
         ))
 
     animation_frames = _load_animation_frames(gfx, anim_meta)
-    sprite_build = build_sprite_assets(animation_frames)
-    sprite_manifest = _write_sprite_assets(output, sprite_build)
+    sprite_build = build_sprite_assets(animation_frames, target)
+    sprite_manifest = _write_sprite_assets(output, sprite_build, target)
     cheat_audio = convert_music(root / "res" / "music" / "cheat.wav",
                                 output, 5753, "cheat.pcm4")
-    _write_header(output, background_entries, sprite_build)
+    _write_header(output, background_entries, sprite_build, target)
 
     manifest: dict[str, object] = {
         "format_version": 1,
         "native_port": True,
         "source_rom_embedded": False,
-        "screen": {"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT,
-                   "map_width": MAP_WIDTH, "map_height": MAP_HEIGHT},
+        "target": target,
+        "screen": {"surface_width": SCREEN_WIDTH,
+                   "surface_height": SCREEN_HEIGHT,
+                   "map_width": MAP_WIDTH, "map_height": MAP_HEIGHT,
+                   "lcd_width": GG_LCD_WIDTH if target == "gg" else SCREEN_WIDTH,
+                   "lcd_height": GG_LCD_HEIGHT if target == "gg" else SCREEN_HEIGHT,
+                   "lcd_x": GG_VIEW_X if target == "gg" else 0,
+                   "lcd_y": GG_VIEW_Y if target == "gg" else 0},
         "bundle": {"magic": "S4BG", "header_size": BG_BUNDLE_HEADER.size,
                    "byte_order": "little", "bank_size_limit": BANK_SIZE},
+        "palette_component_bits": _component_bits(target),
         "background_palette_count": 1,
         "sprite_palette_count": 1,
         "backgrounds": background_entries,
@@ -954,8 +1042,9 @@ def generate(root: Path, output: Path) -> dict[str, object]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Convert extracted Hong Kong 97 graphics to SMS Mode 4"
+        description="Convert extracted Hong Kong 97 graphics to SMS/GG Mode 4"
     )
+    parser.add_argument("--target", choices=("sms", "gg"), default="sms")
     parser.add_argument("--root", type=Path,
                         default=Path(__file__).resolve().parent.parent,
                         help="project root (default: parent of tools/)")
@@ -965,7 +1054,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.root.resolve()
     output = (args.output or (root / "generated")).resolve()
     try:
-        manifest = generate(root, output)
+        manifest = generate(root, output, args.target)
     except (FileNotFoundError, ValueError, json.JSONDecodeError,
             wave.Error) as exc:
         parser.exit(1, f"error: {exc}\n")

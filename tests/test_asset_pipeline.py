@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic-only verification for the SMS asset pipeline."""
+"""Synthetic-only verification for the SMS/Game Gear asset pipeline."""
 
 from __future__ import annotations
 
@@ -36,6 +36,24 @@ class Mode4Tests(unittest.TestCase):
         self.assertEqual(sms.pack_cram_color((0, 255, 0)), 0x0C)
         self.assertEqual(sms.pack_cram_color((0, 0, 255)), 0x30)
         self.assertEqual(sms.pack_cram_color((255, 255, 255)), 0x3F)
+
+    def test_game_gear_cram_bit_packing(self) -> None:
+        self.assertEqual(sms.pack_cram_color((255, 0, 0), "gg"), 0x00F)
+        self.assertEqual(sms.pack_cram_color((0, 255, 0), "gg"), 0x0F0)
+        self.assertEqual(sms.pack_cram_color((0, 0, 255), "gg"), 0xF00)
+        self.assertEqual(
+            sms.encode_cram_palette([(255, 0, 0), (0, 0, 255)], "gg"),
+            bytes((0x0F, 0x00, 0x00, 0x0F)),
+        )
+
+    def test_game_gear_viewport_is_centered_in_virtual_surface(self) -> None:
+        source = Image.new("RGB", (256, 224), (255, 0, 0))
+        surface = sms.prepare_background_for_target(source, "gg")
+        self.assertEqual(surface.size, (256, 224))
+        self.assertEqual(surface.getpixel((47, 24)), (0, 0, 0))
+        self.assertEqual(surface.getpixel((48, 24)), (255, 0, 0))
+        self.assertEqual(surface.getpixel((207, 167)), (255, 0, 0))
+        self.assertEqual(surface.getpixel((208, 167)), (0, 0, 0))
 
     def test_horizontal_and_vertical_flip_bits(self) -> None:
         image = Image.new("RGB", (256, 224), (0, 0, 0))
@@ -107,6 +125,18 @@ class BackgroundBudgetTests(unittest.TestCase):
             self.assertEqual(values[7], 32)
             self.assertEqual(values[8], 32 + len(result.tiles) * 32)
 
+    def test_game_gear_bundle_uses_32_byte_palette(self) -> None:
+        image = sms.prepare_background_for_target(self.noisy_screen(), "gg")
+        result = sms.build_background(image, sms.STATIC_TILE_BUDGET,
+                                      target="gg")
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = sms._write_background(Path(tmp), "synthetic", result, False)
+            bundle = (Path(tmp) / entry["bundle"]).read_bytes()
+            values = sms.BG_BUNDLE_HEADER.unpack_from(bundle)
+            self.assertEqual(values[6], 32)
+            self.assertEqual(values[7], 48)
+            self.assertEqual(len(result.cram), 32)
+
     def test_gameplay_normal_and_index_matched_flash_palettes_differ(self) -> None:
         image = Image.new("RGB", (256, 224))
         image.putdata([((x % 4) * 85, (y % 4) * 85,
@@ -143,6 +173,16 @@ class SpriteTests(unittest.TestCase):
         frame = build.frames[0]
         self.assertEqual(frame["width"], 64)
         self.assertLessEqual(frame["max_scanline"], 8)
+
+    def test_game_gear_sprite_uses_lcd_scale(self) -> None:
+        build = sms.build_sprite_assets({
+            0x02: [(self.opaque(32, 28), 7, None)],
+        }, "gg")
+        frame = build.frames[0]
+        self.assertEqual((frame["width"], frame["height"]), (20, 18))
+        self.assertEqual((frame["origin_x"], frame["origin_y"]), (-10, -9))
+        self.assertLessEqual(frame["max_scanline"], 8)
+        self.assertEqual(build.report["budget"], sms.GG_SPRITE_TILE_BUDGET)
 
     def test_non_boss_over_scanline_limit_fails(self) -> None:
         with self.assertRaisesRegex(ValueError, "scanline"):

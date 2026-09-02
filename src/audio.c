@@ -9,6 +9,10 @@
 #define MIDI_ATTENUATION 2u
 
 __sfr __at (0x7F) PSGPort;
+#ifdef TARGET_GG
+/* Game Gear port $06 routes tone 0..2 and noise to right/left output. */
+__sfr __at (0x06) GGStereoPort;
+#endif
 
 extern const unsigned char music_psg[];
 
@@ -121,6 +125,9 @@ static void restart_midi(void)
 
 void hk_audio_init(void)
 {
+#ifdef TARGET_GG
+    GGStereoPort = 0xFF; /* all four PSG channels on both headphone sides */
+#endif
     pcm_playing = 0;
     restart_midi();
 }

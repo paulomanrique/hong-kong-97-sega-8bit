@@ -1,34 +1,37 @@
-# Hong Kong 97 — Sega Master System port
+# Hong Kong 97 — Game Gear and Sega Master System ports
 
 A native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
-Master System. It was reimplemented from the SNES disassembly developed for
-the earlier Mega Drive port. The result runs directly on the target hardware:
-it neither embeds the SNES ROM nor interprets 65816 code.
+Game Gear and Sega Master System. It was reimplemented from the SNES
+disassembly developed for the earlier Mega Drive port. Both ROMs run directly
+on their target hardware: neither embeds the SNES ROM nor interprets 65816
+code. The Game Gear build is the default target.
 
 **[Download the ready-to-play Master System ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)**
 
 This repository intentionally contains no original-game ROM, extracted
-graphics, extracted audio, generated commercial assets, or compiled `.sms`
-file. Those files are regenerated locally from a user-supplied copy of the
-original game and remain ignored by Git. The open MIDI arrangement used by the
-port is included under `assets/music/`.
+graphics, extracted audio, generated commercial assets, or compiled `.gg` or
+`.sms` file. Those files are regenerated locally from a user-supplied copy of
+the original game and remain ignored by Git. The open MIDI arrangement used by
+the port is included under `assets/music/`.
 
 ## Port behavior
 
 - Boots directly to the first title/presentation screen in English.
-- Only Start/Pause advances that first screen.
+- Only Game Gear Start or Master System Pause advances that first screen.
 - The Konami Code (`Up Up Down Down Left Right Left Right 2 1`) enables
   invincibility and plays the “Eu sou cheteiro” screen and voice cue.
 - D-pad moves Chan; button 1 or 2 fires.
 - The original broken score display and the two Chinese screens after death
   are omitted.
 - The MIDI is compiled offline to a compact native SN76489 event stream.
-- The 96-pixel boss is reduced to 64 pixels to fit the Master System's limit of
-  eight sprites on one scanline. Game logic, health, hitboxes, and movement
-  remain target-native C.
+- Game logic, health, hitboxes, movement, and timing remain in one shared,
+  target-native C core.
 
-The target is 256×224 NTSC Mode 4 and requires an SMS II-class VDP, Game Gear
-VDP, or a Mega Drive/Genesis Power Base Converter.
+The Game Gear target uses its native 160×144 LCD viewport, 12-bit CRAM, Start
+button, and `.gg` header. Backgrounds and sprites are transformed offline by a
+fixed 5/8 horizontal and 9/14 vertical mapping from the source-derived 256×224
+geometry. The SMS target remains 256×224 NTSC Mode 4 and requires an SMS
+II-class VDP or a Mega Drive/Genesis Power Base Converter.
 
 ## Building
 
@@ -60,9 +63,11 @@ make prepare ROM=/path/to/hk97.sfc
 make
 ```
 
-The resulting ROM is `build/hong-kong-97-sms.sms`. `make prepare` validates
-the source ROM before extracting anything. To keep the other repositories in
-different locations, override their paths:
+The default command produces `build/gg/hong-kong-97-gg.gg`. Build the preserved
+Master System target with `make sms`; its ROM is
+`build/sms/hong-kong-97-sms.sms`. `make prepare` validates the source ROM before
+extracting anything. To keep the other repositories in different locations,
+override their paths:
 
 ```sh
 make prepare ROM=/path/to/hk97.sfc \
@@ -77,11 +82,14 @@ different format-0 or format-1 Standard MIDI File.
 
 ```sh
 make test       # host game-logic and synthetic converter tests
-make verify     # tests, ROM build, header/RAM checks, and MesenCE smoke flow
+make verify     # Game Gear build, headers/RAM, boot, gameplay, and cheat flow
+make verify-sms # the same gates for the Master System build
+make verify-all # both targets
 ```
 
-`make verify` expects a MesenCE build; set `MESEN_BIN=/path/to/Mesen` when it
-is not installed at the default path used by `tools/smoke.sh`.
+The verification targets expect a MesenCE build; set
+`MESEN_BIN=/path/to/Mesen` when it is not installed at the default path used by
+`tools/smoke.sh`.
 
 ## Repository layout
 

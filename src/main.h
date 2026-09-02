@@ -15,5 +15,6 @@ typedef int16_t s16;
 #define HK_KEY_FIRE  0x0010u
 #define HK_KEY_1     0x0020u
 #define HK_KEY_2     0x0040u
+#define HK_KEY_START 0x0080u
 
 #endif

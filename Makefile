@@ -2,14 +2,27 @@ DEVKITSMS ?= ../devkitSMS
 PYTHON ?= python3
 CC := sdcc
 
+TARGET ?= gg
+ifeq ($(TARGET),gg)
+PROG := hong-kong-97-gg
+ROM_EXT := gg
+TARGET_CFLAGS := -DTARGET_GG
+SMSLIB_LIB := $(DEVKITSMS)/SMSlib/src/SMSlib_GG.lib
+else ifeq ($(TARGET),sms)
 PROG := hong-kong-97-sms
-BUILD := build
-GENERATED := generated
+ROM_EXT := sms
+TARGET_CFLAGS :=
+SMSLIB_LIB := $(DEVKITSMS)/SMSlib/src/SMSlib.lib
+else
+$(error TARGET must be sms or gg)
+endif
+
+BUILD := build/$(TARGET)
+GENERATED := generated/$(TARGET)
 BANKDIR := $(GENERATED)/banked
 SMSLIB_INCDIR := $(DEVKITSMS)/SMSlib/src
 PEEP_RULES := $(SMSLIB_INCDIR)/peep-rules.txt
 CRT0 := $(DEVKITSMS)/crt0/crt0_sms.rel
-SMSLIB_LIB := $(SMSLIB_INCDIR)/SMSlib.lib
 IHX2SMS ?= $(DEVKITSMS)/ihx2sms/Linux/ihx2sms-local
 ASSETS2BANKS := $(PYTHON) $(abspath $(DEVKITSMS))/assets2banks/src/assets2banks.py
 MIDI ?= assets/music/hk97.mid
@@ -22,7 +35,7 @@ SRCS := $(wildcard src/*.c)
 OBJS := $(patsubst src/%.c,$(BUILD)/%.rel,$(SRCS))
 OBJS += $(BUILD)/music_fixed.rel
 CFLAGS := -mz80 -Isrc -I$(GENERATED) -I$(BANKDIR) -I$(SMSLIB_INCDIR) \
-	--peep-file $(PEEP_RULES) $(EXTRA_CFLAGS)
+	--peep-file $(PEEP_RULES) $(TARGET_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := -mz80 --no-std-crt0 --data-loc 0xC000
 
 # Evaluated by the recursive `link` invocation, after assets2banks has emitted
@@ -31,9 +44,16 @@ BANKRELS = $(shell printf '%s\n' $(wildcard $(BANKDIR)/bank*.rel) | sort -V)
 BANKNUMS = $(patsubst $(BANKDIR)/bank%.rel,%,$(BANKRELS))
 BANKFLAGS = $(foreach n,$(BANKNUMS),-Wl-b_BANK$(n)=0x8000)
 
-.PHONY: all prepare assets build-code-fast link host-test test smoke smoke-flow verify clean FORCE
+.PHONY: all sms gg prepare assets build-code-fast link host-test test \
+	smoke smoke-flow smoke-cheat verify verify-sms verify-all clean FORCE
 
 all: build-code-fast
+
+sms:
+	@$(MAKE) --no-print-directory TARGET=sms build-code-fast
+
+gg:
+	@$(MAKE) --no-print-directory TARGET=gg build-code-fast
 
 prepare:
 	@if [ -n "$(ROM)" ]; then $(PYTHON) tools/unpack_rom.py "$(ROM)"; \
@@ -62,8 +82,11 @@ $(GENERATED)/.stamp: work/hk97.sfc tools/trace65816.py tools/extract_gfx.py \
 	$(PYTHON) tools/generate_cheat_assets.py --source "$(CHEAT_ASSETS)"
 	$(PYTHON) tools/extract_anims.py
 	$(PYTHON) tools/gen_tables.py
-	$(PYTHON) tools/generate_sms_assets.py
-	$(PYTHON) tools/convert_midi_psg.py "$(MIDI)"
+	$(PYTHON) tools/generate_sms_assets.py --target $(TARGET) --output $(GENERATED)
+	$(PYTHON) tools/convert_midi_psg.py "$(MIDI)" \
+		--output $(GENERATED)/music.psg \
+		--header $(GENERATED)/sms_audio.h \
+		--manifest $(GENERATED)/music_manifest.json
 	cd $(GENERATED) && xxd -i music.psg > music_fixed.c
 	sed -i -e 's/^unsigned char music_psg/const unsigned char music_psg/' \
 		-e 's/^unsigned int music_psg_len/const unsigned int music_psg_len/' \
@@ -80,7 +103,7 @@ $(GENERATED)/.stamp: work/hk97.sfc tools/trace65816.py tools/extract_gfx.py \
 build-code-fast: assets host-test
 	@$(MAKE) --no-print-directory link
 
-link: $(BUILD)/$(PROG).sms
+link: $(BUILD)/$(PROG).$(ROM_EXT)
 
 $(BUILD):
 	mkdir -p $@
@@ -99,9 +122,10 @@ $(BUILD)/$(PROG).ihx: $(OBJS) $(BANKRELS) Makefile
 	@test -n "$(BANKRELS)" || { echo "No generated asset banks found" >&2; exit 2; }
 	$(CC) -o $@ $(LDFLAGS) $(BANKFLAGS) $(CRT0) $(OBJS) $(BANKRELS) $(SMSLIB_LIB)
 
-$(BUILD)/$(PROG).sms: $(BUILD)/$(PROG).ihx
+$(BUILD)/$(PROG).$(ROM_EXT): $(BUILD)/$(PROG).ihx tools/finalize_rom.py
 	@test -x "$(IHX2SMS)" || { echo "Missing $(IHX2SMS); build it from devkitSMS/ihx2sms/src" >&2; exit 2; }
-	$(IHX2SMS) $< $@
+	$(IHX2SMS) -pp $< $@
+	$(PYTHON) tools/finalize_rom.py --target $(TARGET) $@
 
 host-test: | $(BUILD)
 	cc -std=c99 -Wall -Wextra -Werror -Isrc src/game.c tests/test_game_logic.c \
@@ -112,18 +136,32 @@ test: host-test
 	$(PYTHON) -m unittest discover -v tests
 
 smoke: build-code-fast
-	./tools/smoke.sh --rom $(BUILD)/$(PROG).sms --frames 150 \
-		--shot docs/screenshots/boot.png
+	./tools/smoke.sh --rom $(BUILD)/$(PROG).$(ROM_EXT) --frames 150 \
+		--shot docs/screenshots/$(TARGET)-boot.png
 
 smoke-flow: build-code-fast
-	./tools/smoke.sh --rom $(BUILD)/$(PROG).sms --flow --frames 1800 \
-		--shot docs/screenshots/gameplay.png
+	./tools/smoke.sh --rom $(BUILD)/$(PROG).$(ROM_EXT) --flow --frames 1800 \
+		--map $(BUILD)/$(PROG).map \
+		--shot docs/screenshots/$(TARGET)-gameplay.png
 
-verify: test build-code-fast smoke smoke-flow
-	$(PYTHON) tools/verify_build.py $(BUILD)/$(PROG).sms $(BUILD)/$(PROG).map
+smoke-cheat: build-code-fast
+	./tools/smoke.sh --rom $(BUILD)/$(PROG).$(ROM_EXT) --cheat --frames 600 \
+		--map $(BUILD)/$(PROG).map \
+		--shot docs/screenshots/$(TARGET)-cheat.png
+
+verify: test build-code-fast smoke smoke-flow smoke-cheat
+	$(PYTHON) tools/verify_build.py --target $(TARGET) \
+		$(BUILD)/$(PROG).$(ROM_EXT) $(BUILD)/$(PROG).map
+
+verify-sms:
+	@$(MAKE) --no-print-directory TARGET=sms verify
+
+verify-all:
+	@$(MAKE) --no-print-directory TARGET=sms verify
+	@$(MAKE) --no-print-directory TARGET=gg verify
 
 clean:
-	rm -rf $(BUILD) $(GENERATED) disasm res
+	rm -rf build generated disasm res
 	rm -f docs/anims.json src/game_tables.h
 
 FORCE:
