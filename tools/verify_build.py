@@ -19,6 +19,9 @@ def main() -> int:
     args = parser.parse_args()
 
     rom = args.rom.read_bytes()
+    version = (Path(__file__).resolve().parent.parent / "VERSION").read_text(
+        encoding="ascii"
+    ).strip()
     if len(rom) != 512 * 1024:
         raise SystemExit(
             f"ROM must be power-of-two padded to 512 KiB: {len(rom)} bytes"
@@ -31,8 +34,17 @@ def main() -> int:
             f"wrong {args.target} region/size byte at 0x7fff: "
             f"{rom[0x7FFF]:#04x} != {expected_region:#04x}"
         )
-    if b"SDSC" not in rom[:0x8000]:
-        raise SystemExit("missing SDSC header in fixed ROM area")
+    sdsc_offset = 0x7FE0
+    if rom[sdsc_offset:sdsc_offset + 4] != b"SDSC":
+        raise SystemExit("missing SDSC header at 0x7fe0")
+    if rom[sdsc_offset + 4:sdsc_offset + 6] != bytes((0x00, 0x01)):
+        raise SystemExit("SDSC version must encode release 0.0.1 as 0.01")
+    target_name = "GG" if args.target == "gg" else "SMS"
+    expected_name = f"Hong Kong 97 {target_name} v{version}\0".encode("ascii")
+    if expected_name not in rom[:0x8000]:
+        raise SystemExit(
+            f"ROM metadata does not contain release version {version}"
+        )
     stored_checksum = rom[0x7FFA] | (rom[0x7FFB] << 8)
     calculated_checksum = calculate_checksum(rom)
     if stored_checksum != calculated_checksum:

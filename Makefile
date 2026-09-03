@@ -1,6 +1,7 @@
 DEVKITSMS ?= ../devkitSMS
 PYTHON ?= python3
 CC := sdcc
+VERSION := $(strip $(shell cat VERSION))
 
 TARGET ?= gg
 ifeq ($(TARGET),gg)
@@ -45,7 +46,7 @@ BANKNUMS = $(patsubst $(BANKDIR)/bank%.rel,%,$(BANKRELS))
 BANKFLAGS = $(foreach n,$(BANKNUMS),-Wl-b_BANK$(n)=0x8000)
 
 .PHONY: all sms gg prepare assets build-code-fast link host-test test \
-	smoke smoke-flow smoke-cheat verify verify-sms verify-all clean FORCE
+	smoke smoke-flow smoke-cheat verify verify-sms verify-all release clean FORCE
 
 all: build-code-fast
 
@@ -111,7 +112,7 @@ $(BUILD):
 $(BUILD)/.cflags: FORCE | $(BUILD)
 	@printf '%s' '$(CFLAGS)' | cmp -s - $@ || printf '%s' '$(CFLAGS)' > $@
 
-$(BUILD)/%.rel: src/%.c src/main.h src/game.h src/audio.h \
+$(BUILD)/%.rel: src/%.c src/main.h src/game.h src/audio.h src/version.h \
 	$(BUILD)/.cflags $(GENERATED)/.stamp | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -159,6 +160,14 @@ verify-sms:
 verify-all:
 	@$(MAKE) --no-print-directory TARGET=sms verify
 	@$(MAKE) --no-print-directory TARGET=gg verify
+
+release: verify
+	mkdir -p release
+	cp $(BUILD)/$(PROG).$(ROM_EXT) release/$(PROG)-v$(VERSION).$(ROM_EXT)
+	cp $(BUILD)/$(PROG).$(ROM_EXT) release/$(PROG).$(ROM_EXT)
+	cd release && sha256sum $(PROG)-v$(VERSION).$(ROM_EXT) > \
+		$(PROG)-v$(VERSION).$(ROM_EXT).sha256
+	@echo "release/$(PROG)-v$(VERSION).$(ROM_EXT)"
 
 clean:
 	rm -rf build generated disasm res

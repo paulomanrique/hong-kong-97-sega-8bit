@@ -3,6 +3,7 @@
 #include <SMSlib.h>
 
 #include "main.h"
+#include "version.h"
 #include "game.h"
 #include "audio.h"
 #include "sms_assets.h"
@@ -557,9 +558,15 @@ const __at (0x7ff0) unsigned char hk_sega_header[16] = {
     0xFF,0xFF,0xFF,0xFF,0x00,0x00,0x00,HK_SEGA_REGION_SIZE
 };
 #ifdef TARGET_GG
-SMS_EMBED_SDSC_HEADER_AUTO_DATE(0, 1, "Paulo Manrique",
-                                "Hong Kong 97 GG", "Native port");
+SMS_EMBED_SDSC_HEADER_AUTO_DATE(HK97_SDSC_VERSION_MAJOR,
+                                HK97_SDSC_VERSION_MINOR,
+                                "Paulo Manrique",
+                                "Hong Kong 97 GG v" HK97_VERSION,
+                                "Native port");
 #else
-SMS_EMBED_SDSC_HEADER_AUTO_DATE(0, 1, "Paulo Manrique",
-                                "Hong Kong 97 SMS", "Native port");
+SMS_EMBED_SDSC_HEADER_AUTO_DATE(HK97_SDSC_VERSION_MAJOR,
+                                HK97_SDSC_VERSION_MINOR,
+                                "Paulo Manrique",
+                                "Hong Kong 97 SMS v" HK97_VERSION,
+                                "Native port");
 #endif

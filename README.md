@@ -4,7 +4,8 @@ A native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
 Game Gear and Sega Master System. It was reimplemented from the SNES
 disassembly developed for the earlier Mega Drive port. Both ROMs run directly
 on their target hardware: neither embeds the SNES ROM nor interprets 65816
-code. The Game Gear build is the default target.
+code. The Game Gear build is the default target. The current release is
+**v0.0.1**.
 
 **[Download the ready-to-play Master System ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)**
 
@@ -77,6 +78,15 @@ make prepare ROM=/path/to/hk97.sfc \
 
 The included MIDI is used by default. `MIDI=/path/to/another.mid` selects a
 different format-0 or format-1 Standard MIDI File.
+
+After verification, create the versioned Game Gear release and checksum with:
+
+```sh
+make release
+```
+
+For v0.0.1 this produces `release/hong-kong-97-gg-v0.0.1.gg`, its `.sha256`
+sidecar, and the convenient unversioned `release/hong-kong-97-gg.gg` copy.
 
 ### Tests and verification
 

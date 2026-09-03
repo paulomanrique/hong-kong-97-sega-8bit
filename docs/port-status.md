@@ -2,6 +2,10 @@
 
 ## Current result
 
+The approved Game Gear build is release **v0.0.1**. Its SDSC two-field BCD
+version is `0.01`, while the complete semantic version is stored in the SDSC
+name and the repository's `VERSION` file.
+
 The project builds native Z80/SMSlib ROMs for Game Gear and Master System and
 reaches live gameplay through the complete intro flow on both targets. The
 shipping code is readable C; the 65816 tracer is an offline source-of-truth
