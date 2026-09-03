@@ -1,4 +1,4 @@
-# Hong Kong 97 — Game Gear and Sega Master System ports
+# Hong Kong 97 — Sega 8-bit ports
 
 A native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
 Game Gear and Sega Master System. It was reimplemented from the SNES
@@ -6,6 +6,10 @@ disassembly developed for the earlier Mega Drive port. Both ROMs run directly
 on their target hardware: neither embeds the SNES ROM nor interprets 65816
 code. The Game Gear build is the default target. The current release is
 **v0.0.1**.
+
+Game Gear and Master System live together on the same `main` branch because
+they share the native game core and offline asset pipeline. Target-specific
+hardware adaptations are selected by `TARGET=gg` or `TARGET=sms`.
 
 **[Download the ready-to-play Master System ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)**
 

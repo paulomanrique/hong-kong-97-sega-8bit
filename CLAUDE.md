@@ -76,6 +76,7 @@ nothing; search both languages, or ask the API.
 - 2026-09-02 — "vamos converter o jogo ../hong-kong-97-sms para o gamegear"
 - 2026-09-02 — "os textos da tela titulo e da intro estao ilegiveis"
 - 2026-09-02 — "ok, essa será a versão 0.0.1"
+- 2026-09-02 — "ok, reune o repo, renomeia pra hong-kong-97-sega-8bit"
 
 ## Rule 4 — The request, written down, outlives the session
 
