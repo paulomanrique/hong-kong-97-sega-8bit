@@ -1,17 +1,21 @@
-# Hong Kong 97 — Sega 8-bit ports
+# Hong Kong 97 — Sega 8-bit Edition
 
 A native C/Z80 conversion of *Hong Kong 97* (HappySoft, 1995) for the Sega
 Game Gear and Sega Master System. It was reimplemented from the SNES
 disassembly developed for the earlier Mega Drive port. Both ROMs run directly
 on their target hardware: neither embeds the SNES ROM nor interprets 65816
-code. The Game Gear build is the default target. The current release is
-**v0.0.1**.
+code. The current project version is **v0.0.1**.
 
 Game Gear and Master System live together on the same `main` branch because
 they share the native game core and offline asset pipeline. Target-specific
 hardware adaptations are selected by `TARGET=gg` or `TARGET=sms`.
 
-**[Download the ready-to-play Master System ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)**
+## Downloads
+
+- **Master System:** [ready-to-play ROM on itch.io](https://sirvh.itch.io/hong-kong-97-master-system)
+- **Game Gear v0.0.1:** built locally from a legally obtained source ROM using
+  the reproducible process below. Generated commercial assets and compiled ROMs
+  are intentionally not stored in this repository.
 
 This repository intentionally contains no original-game ROM, extracted
 graphics, extracted audio, generated commercial assets, or compiled `.gg` or
@@ -19,7 +23,21 @@ graphics, extracted audio, generated commercial assets, or compiled `.gg` or
 the original game and remain ignored by Git. The open MIDI arrangement used by
 the port is included under `assets/music/`.
 
-## Port behavior
+## Targets
+
+| Target | Display | Color | Start input | Build output |
+|---|---:|---:|---|---|
+| Game Gear | 160×144 | 12-bit CRAM | Start | `build/gg/hong-kong-97-gg.gg` |
+| Master System | 256×224 | 6-bit CRAM | Pause | `build/sms/hong-kong-97-sms.sms` |
+
+Game Gear is the default build. Its gameplay imagery and sprites use a fixed
+mapping from the source-derived 256×224 geometry. The title preserves its
+original text pixels at native resolution, while the four English introduction
+pages keep the original 8×8 glyphs and reflow them to the LCD's 20 columns.
+The Master System target retains the full 256×224 presentation and requires an
+SMS II-class VDP or a Mega Drive/Genesis Power Base Converter.
+
+## Game behavior
 
 - Boots directly to the first title/presentation screen in English.
 - Only Game Gear Start or Master System Pause advances that first screen.
@@ -31,12 +49,6 @@ the port is included under `assets/music/`.
 - The MIDI is compiled offline to a compact native SN76489 event stream.
 - Game logic, health, hitboxes, movement, and timing remain in one shared,
   target-native C core.
-
-The Game Gear target uses its native 160×144 LCD viewport, 12-bit CRAM, Start
-button, and `.gg` header. Backgrounds and sprites are transformed offline by a
-fixed 5/8 horizontal and 9/14 vertical mapping from the source-derived 256×224
-geometry. The SMS target remains 256×224 NTSC Mode 4 and requires an SMS
-II-class VDP or a Mega Drive/Genesis Power Base Converter.
 
 ## Building
 
@@ -59,20 +71,18 @@ The expected source is the unheadered 524,288-byte No-Intro dump with SHA-1:
 6b518a19acea46ec62b7d7ce6604013f62a6906e
 ```
 
-With `devkitSMS`, `hong-kong-97-genesis`, and this repository in the same
-parent directory:
+With `devkitSMS`, `hong-kong-97-genesis`, and
+`hong-kong-97-sega-8bit` in the same parent directory:
 
 ```sh
-python3 -m pip install Pillow
 make prepare ROM=/path/to/hk97.sfc
-make
+make gg
+make sms
 ```
 
-The default command produces `build/gg/hong-kong-97-gg.gg`. Build the preserved
-Master System target with `make sms`; its ROM is
-`build/sms/hong-kong-97-sms.sms`. `make prepare` validates the source ROM before
-extracting anything. To keep the other repositories in different locations,
-override their paths:
+`make prepare` validates the source ROM and generates private derived assets.
+`make` and `make gg` build Game Gear; `make sms` builds Master System. To keep
+the dependencies in different locations, override their paths:
 
 ```sh
 make prepare ROM=/path/to/hk97.sfc \
@@ -83,22 +93,24 @@ make prepare ROM=/path/to/hk97.sfc \
 The included MIDI is used by default. `MIDI=/path/to/another.mid` selects a
 different format-0 or format-1 Standard MIDI File.
 
-After verification, create the versioned Game Gear release and checksum with:
+After verification, create versioned local ROMs and SHA-256 sidecars with:
 
 ```sh
-make release
+make release            # Game Gear
+make TARGET=sms release # Master System
 ```
 
-For v0.0.1 this produces `release/hong-kong-97-gg-v0.0.1.gg`, its `.sha256`
-sidecar, and the convenient unversioned `release/hong-kong-97-gg.gg` copy.
+For v0.0.1, the default target produces
+`release/hong-kong-97-gg-v0.0.1.gg`, its `.sha256` sidecar, and the convenient
+unversioned `release/hong-kong-97-gg.gg` copy.
 
 ### Tests and verification
 
-```sh
-make test       # host game-logic and synthetic converter tests
-make verify     # Game Gear build, headers/RAM, boot, gameplay, and cheat flow
-make verify-sms # the same gates for the Master System build
-make verify-all # both targets
+```text
+make test        host game-logic and synthetic converter tests
+make verify      Game Gear build, headers/RAM, boot, gameplay, and cheat flow
+make verify-sms  the same gates for the Master System build
+make verify-all  both targets
 ```
 
 The verification targets expect a MesenCE build; set
@@ -123,5 +135,5 @@ The reimplementation, tools, and documentation are MIT licensed; see
 documented in [`assets/music/README.md`](assets/music/README.md).
 
 *Hong Kong 97* and its original graphics, audio, text, and other assets belong
-to their respective rights holders. They are not included here. The generated
-ROM is available separately from the itch.io page linked above.
+to their respective rights holders. They are not included here. The Master
+System ROM is distributed separately through the itch.io page linked above.
